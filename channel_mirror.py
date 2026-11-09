@@ -4,7 +4,7 @@ Every channel that is not a target is silent in the output. Source files are nev
 Output names: "<name>_<left|right|both><ext>", or "<name>_from<L|R>_<target><ext>" when several sources are ticked.
 Needs: numpy, plus ffmpeg + ffprobe on PATH (any format ffmpeg reads: wav, mp3, flac, m4a, ...).
 
-    python channel_mirror.py             # open the menu window
+    pythonw channel_mirror.py            # open the desktop window (no console)
     python channel_mirror.py --selftest  # quick end-to-end check
 """
 import json
@@ -18,13 +18,16 @@ FRAMES_PER_READ = 1 << 18
 SOURCES = ("Auto (loudest)", "L", "R")
 TARGETS = {"Both": "both", "Left": "left", "Right": "right"}
 AUDIO_EXT = (".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".aiff", ".aif", ".wma")
+SETTINGS = Path.home() / ".channel_mirror.json"
+# ponytail: pythonw has no console, so keep ffmpeg/ffprobe from flashing one per file
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def probe(path):
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "a:0", "-of", "json",
          "-show_entries", "stream=codec_name,channels,channel_layout,bit_rate", str(path)],
-        capture_output=True, text=True)
+        capture_output=True, text=True, creationflags=NO_WINDOW)
     streams = json.loads(out.stdout or "{}").get("streams")
     if out.returncode or not streams:
         raise ValueError(f"No readable audio stream in {Path(path).name}")
@@ -37,7 +40,7 @@ def analyze(path):
     n = int(info["channels"])
     proc = subprocess.Popen(
         ["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:a:0", "-f", "f32le", "-acodec", "pcm_f32le", "-"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
     sq, peak, frames = np.zeros(n), np.zeros(n), 0
     while chunk := proc.stdout.read(FRAMES_PER_READ * 4 * n):  # blocks for full frames until EOF
         a = np.frombuffer(chunk, "<f4").reshape(-1, n).astype(np.float64)
@@ -91,7 +94,7 @@ def route(src, dst, info, ch, target):
     keep = ["-c:a", info["codec_name"]] + (["-b:a", info["bit_rate"]] if info.get("bit_rate") else [])
     # ponytail: if the source codec has no encoder (e.g. wmapro), fall back to ffmpeg's default for the extension
     for extra in (keep, []):
-        r = subprocess.run(base + extra + [str(dst)], capture_output=True, text=True)
+        r = subprocess.run(base + extra + [str(dst)], capture_output=True, text=True, creationflags=NO_WINDOW)
         if r.returncode == 0:
             return
     raise RuntimeError(f"ffmpeg failed writing {Path(dst).name}:\n{r.stderr.strip()[-500:]}")
@@ -101,36 +104,74 @@ def gui():
     import tkinter as tk
     from tkinter import filedialog, messagebox
 
+    try:
+        cfg = json.loads(SETTINGS.read_text())
+    except (OSError, ValueError):
+        cfg = {}
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # sharp text on scaled Windows displays
+    except (AttributeError, OSError):
+        pass
     items = []  # (path, info, rms)
     root = tk.Tk()
     root.title("Channel Mirror")
-    root.geometry("960x420")
+    pad = {"padx": 10, "pady": 4}
 
-    bar = tk.Frame(root)
-    bar.pack(fill="x", padx=8, pady=(6, 0))
-    opts = tk.Frame(root)
-    opts.pack(fill="x", padx=8, pady=6)
-    lst = tk.Listbox(root, font=("Consolas", 10))
-    lst.pack(fill="both", expand=True, padx=8)
-    status = tk.Label(root, anchor="w", text="Add audio files or a folder to analyze.")
-    status.pack(fill="x", padx=8, pady=4)
+    # 1. Input files
+    inp = tk.LabelFrame(root, text=" 1. Input files ")
+    inp.pack(fill="both", expand=True, **pad)
+    side = tk.Frame(inp)
+    side.pack(side="right", fill="y", padx=6, pady=4)
+    box = tk.Frame(inp)
+    box.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=4)
+    lst = tk.Listbox(box, font=("Consolas", 10), selectmode="extended", width=110, height=12)
+    ys = tk.Scrollbar(box, command=lst.yview)
+    xs = tk.Scrollbar(box, orient="horizontal", command=lst.xview)
+    lst.config(yscrollcommand=ys.set, xscrollcommand=xs.set)
+    ys.pack(side="right", fill="y")
+    xs.pack(side="bottom", fill="x")
+    lst.pack(fill="both", expand=True)
 
-    src_vars = {s: tk.BooleanVar(value=s.startswith("Auto")) for s in SOURCES}
-    tgt_vars = {t: tk.BooleanVar(value=t == "both") for t in TARGETS.values()}
+    # 2. Settings
+    sett = tk.LabelFrame(root, text=" 2. Settings ")
+    sett.pack(fill="x", **pad)
+    src_on, tgt_on = cfg.get("sources", ["Auto (loudest)"]), cfg.get("targets", ["both"])
+    src_vars = {s: tk.BooleanVar(value=s in src_on) for s in SOURCES}
+    tgt_vars = {t: tk.BooleanVar(value=t in tgt_on) for t in TARGETS.values()}
+
+    # 3. Output folder
+    outf = tk.LabelFrame(root, text=" 3. Output folder (blank = next to each input file) ")
+    outf.pack(fill="x", **pad)
+    out_var = tk.StringVar(value=cfg.get("out_dir", ""))
+    tk.Entry(outf, textvariable=out_var).pack(side="left", fill="x", expand=True, padx=6, pady=6)
+
+    runbar = tk.Frame(root)
+    runbar.pack(fill="x", padx=10, pady=(4, 10))
+    status = tk.Label(runbar, anchor="w", text="Add audio files or a folder to begin.")
 
     def chosen():
         return [s for s, v in src_vars.items() if v.get()], [t for t, v in tgt_vars.items() if v.get()]
 
+    def save_settings():
+        sources, targets = chosen()
+        try:
+            SETTINGS.write_text(json.dumps({"sources": sources, "targets": targets, "out_dir": out_var.get().strip()}))
+        except OSError:
+            pass  # settings are a convenience; never block the user over them
+
     def refresh(*_):
         lst.delete(0, "end")
         sources, targets = chosen()
+        total = 0
         for src, _, rms in items:
             names = labels(len(rms))
             levels = "  ".join(f"{nm} {v:6.1f} dB" for nm, v in zip(names, db(rms)))
             jobs = plan_jobs(src, rms, sources, targets)
+            total += len(jobs)
             outs = ", ".join(j[2] for j in jobs) or "(nothing selected)"
             lst.insert("end", f"{src.name}  |  {levels}  |  loudest {names[int(np.argmax(rms))]}  |  {len(jobs)} out: {outs}")
-        status.config(text=f"{len(items)} file(s), {sum(len(plan_jobs(p, r, sources, targets)) for p, _, r in items)} output(s) planned.")
+        status.config(text=f"{len(items)} file(s) loaded, {total} output file(s) will be written.")
 
     def busy(msg):
         status.config(text=msg)
@@ -161,22 +202,37 @@ def gui():
         if folder:
             load(sorted(p for p in Path(folder).iterdir() if p.suffix.lower() in AUDIO_EXT))
 
+    def remove_selected():
+        for i in reversed(lst.curselection()):
+            del items[i]
+        refresh()
+
     def clear():
         items.clear()
         refresh()
 
-    def save():
+    def browse_out():
+        folder = filedialog.askdirectory(title="Save output files to...")
+        if folder:
+            out_var.set(folder)
+
+    def run():
         sources, targets = chosen()
         if not items or not sources or not targets:
-            messagebox.showinfo("Nothing to save", "Add files and tick at least one source and one output.")
+            messagebox.showinfo("Nothing to run", "Add files and tick at least one source and one output.")
             return
-        folder = filedialog.askdirectory(title="Save output files to...", initialdir=items[0][0].parent)
-        if not folder:
-            return
+        folder = out_var.get().strip()
+        if folder:
+            try:
+                Path(folder).mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                messagebox.showerror("Output folder", f"Can't use output folder:\n{e}")
+                return
+        save_settings()
         jobs, planned = [], set()
         for src, info, rms in items:
             for ch, target, name in plan_jobs(src, rms, sources, targets):
-                dst, k = Path(folder) / name, 2
+                dst, k = (Path(folder) if folder else src.parent) / name, 2
                 while dst in planned or dst.resolve() == src.resolve():  # same-named inputs / never touch originals
                     dst, k = dst.with_name(f"{Path(name).stem}_{k}{dst.suffix}"), k + 1
                 planned.add(dst)
@@ -198,32 +254,43 @@ def gui():
             except Exception as e:
                 failed.append(f"{dst.name}: {e}")
         root.config(cursor="")
-        status.config(text=f"Saved {done} file(s) to {folder}" + (f", {len(failed)} failed" if failed else ""))
-        msg = f"Saved {done} file(s) to:\n{folder}"
+        where = folder or "next to each input file"
+        status.config(text=f"Done: {done} file(s) written ({where})" + (f", {len(failed)} failed" if failed else ""))
+        msg = f"Wrote {done} file(s)\n{where}"
         if failed:
             messagebox.showerror("Done with errors", msg + "\n\nFailed:\n" + "\n".join(failed[:20]))
         else:
             messagebox.showinfo("Done", msg)
 
-    for text, cmd in (("Add files...", add_files), ("Add folder...", add_folder), ("Save output files...", save),
-                      ("Clear", clear), ("Quit", root.destroy)):
-        tk.Button(bar, text=text, command=cmd, width=18 if "Save" in text else 12).pack(side="left", padx=3)
+    for text, cmd in (("Add files...", add_files), ("Add folder...", add_folder),
+                      ("Remove selected", remove_selected), ("Clear all", clear)):
+        tk.Button(side, text=text, command=cmd, width=16).pack(pady=2)
+    tk.Button(outf, text="Browse...", command=browse_out, width=12).pack(side="left", padx=(0, 6))
+    tk.Button(runbar, text="Run", command=run, width=14, font=("Segoe UI", 11, "bold")).pack(side="left")
+    status.pack(side="left", fill="x", expand=True, padx=10)
 
     def group(title, vars_, text_for):
-        tk.Label(opts, text=title).pack(side="left")
+        row = tk.Frame(sett)
+        row.pack(fill="x", padx=6, pady=3)
+        tk.Label(row, text=title, width=16, anchor="w").pack(side="left")
         all_var = tk.BooleanVar(value=all(v.get() for v in vars_.values()))
+
         def toggle_all():
             on = all_var.get()  # read once: setting each box re-syncs all_var mid-loop
             for v in vars_.values():
                 v.set(on)
-        tk.Checkbutton(opts, text="All", variable=all_var, command=toggle_all).pack(side="left")
+        tk.Checkbutton(row, text="All", variable=all_var, command=toggle_all).pack(side="left")
         for key, v in vars_.items():
-            tk.Checkbutton(opts, text=text_for(key), variable=v).pack(side="left")
+            tk.Checkbutton(row, text=text_for(key), variable=v).pack(side="left", padx=4)
             v.trace_add("write", lambda *_: (all_var.set(all(x.get() for x in vars_.values())), refresh()))
-        tk.Frame(opts, width=24).pack(side="left")
 
-    group("Source:", src_vars, lambda s: s)
+    group("Source channel:", src_vars, lambda s: s)
     group("Output to:", tgt_vars, str.capitalize)
+
+    def on_close():
+        save_settings()
+        root.destroy()
+    root.protocol("WM_DELETE_WINDOW", on_close)
     root.mainloop()
 
 

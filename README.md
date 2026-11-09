@@ -12,14 +12,22 @@ Originals are never modified.
 ## Use
 
 ```
-python channel_mirror.py             # open the window
+pythonw channel_mirror.py            # open the desktop window (no console)
 python channel_mirror.py --selftest  # end-to-end check
 ```
 
-1. **Add files...** or **Add folder...** (every audio file in that folder). Each row shows per-channel loudness (RMS dB).
-2. Tick **Source**: `Auto (loudest)`, `L`, `R` (or `All`).
-3. Tick **Output to**: `Both`, `Left`, `Right` (or `All`).
-4. **Save output files...** and pick a folder. One file is written per input × source × output.
+Desktop shortcut (Windows, run once from this folder in PowerShell):
+
+```powershell
+$s = (New-Object -ComObject WScript.Shell).CreateShortcut("$([Environment]::GetFolderPath('Desktop'))\Channel Mirror.lnk")
+$s.TargetPath = (Get-Command pythonw).Source; $s.Arguments = "`"$PWD\channel_mirror.py`""; $s.WorkingDirectory = "$PWD"; $s.Save()
+```
+
+1. **Input files**: **Add files...** or **Add folder...** (every audio file in that folder). Each row shows
+   per-channel loudness (RMS dB) and the files it will produce. **Remove selected** / **Clear all** to edit the list.
+2. **Settings**: tick **Source channel** `Auto (loudest)`, `L`, `R` and **Output to** `Both`, `Left`, `Right` (`All` ticks a whole row).
+3. **Output folder**: type or **Browse...**; leave blank to write next to each input file.
+4. **Run**. One file is written per input × source × output. Settings and output folder are remembered.
 
 Output names: `song_left.mp3`, `song_right.mp3`, `song_both.mp3`. When several sources are ticked
 the source is added: `song_fromR_left.mp3`. The source format and bitrate are kept where possible.
