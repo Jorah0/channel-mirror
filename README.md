@@ -9,7 +9,17 @@ Originals are never modified.
 - Python 3.10+ with `numpy` (`pip install numpy`)
 - [ffmpeg](https://ffmpeg.org/) (`ffmpeg` and `ffprobe` on PATH), e.g. `winget install Gyan.FFmpeg`
 
-## Use
+## Executable (easiest)
+
+```powershell
+.\build.ps1        # -> dist\ChannelMirror.exe (single file, no Python needed to run it)
+```
+
+Double-click `dist\ChannelMirror.exe`, or copy it anywhere (Desktop, another PC). It still needs ffmpeg:
+either installed on PATH, or `ffmpeg.exe` + `ffprobe.exe` placed in the same folder as the exe.
+If neither is found it says so on startup.
+
+## Use from source
 
 ```text
 pythonw channel_mirror.py            # open the desktop window (no console)

@@ -8,6 +8,8 @@ Needs: numpy, plus ffmpeg + ffprobe on PATH (any format ffmpeg reads: wav, mp3, 
     python channel_mirror.py --selftest  # quick end-to-end check
 """
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +27,9 @@ AUDIO_ONLY_EXT = {"aac": ".m4a", "alac": ".m4a", "mp3": ".mp3", "opus": ".opus",
 SETTINGS = Path.home() / ".channel_mirror.json"
 # ponytail: pythonw has no console, so keep ffmpeg/ffprobe from flashing one per file
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# the packaged ChannelMirror.exe also finds ffmpeg.exe / ffprobe.exe placed next to it
+if getattr(sys, "frozen", False):
+    os.environ["PATH"] = str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", "")
 
 
 def probe(path):
@@ -134,6 +139,12 @@ def gui():
         pass
     items = []  # (path, info, rms)
     root = tk.Tk()
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        root.withdraw()
+        messagebox.showerror("Channel Mirror", "ffmpeg and ffprobe were not found.\n\nInstall with:  winget install Gyan.FFmpeg\n"
+                             "or put ffmpeg.exe and ffprobe.exe next to ChannelMirror.exe, then start it again.")
+        root.destroy()
+        return
     root.title("Channel Mirror")
     pad = {"padx": 10, "pady": 4}
 
