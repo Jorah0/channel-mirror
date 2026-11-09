@@ -18,6 +18,10 @@ FRAMES_PER_READ = 1 << 18
 SOURCES = ("Auto (loudest)", "L", "R")
 TARGETS = {"Both": "both", "Left": "left", "Right": "right"}
 AUDIO_EXT = (".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".aiff", ".aif", ".wma")
+VIDEO_EXT = (".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".wmv", ".flv", ".mpg", ".mpeg", ".ts")
+# audio-only output from a video: container per audio codec; pcm_* -> .wav, anything else -> .mka (holds any codec)
+AUDIO_ONLY_EXT = {"aac": ".m4a", "alac": ".m4a", "mp3": ".mp3", "opus": ".opus", "vorbis": ".ogg",
+                  "flac": ".flac", "ac3": ".ac3", "eac3": ".eac3"}
 SETTINGS = Path.home() / ".channel_mirror.json"
 # ponytail: pythonw has no console, so keep ffmpeg/ffprobe from flashing one per file
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -67,11 +71,19 @@ def pick_source(rms, choice):
     return min("LR".index(choice), len(rms) - 1), False
 
 
-def out_name(src, target, from_=None):
-    return f"{src.stem}{f'_from{from_}' if from_ else ''}_{target}{src.suffix}"
+def out_ext(src, info, audio_only):
+    """Extension for the output: the source's own, unless a video is being written as audio only."""
+    if not audio_only or src.suffix.lower() in AUDIO_EXT:
+        return src.suffix
+    codec = info["codec_name"]
+    return ".wav" if codec.startswith("pcm_") else AUDIO_ONLY_EXT.get(codec, ".mka")
 
 
-def plan_jobs(src, rms, sources, targets):
+def out_name(src, target, from_=None, ext=None):
+    return f"{src.stem}{f'_from{from_}' if from_ else ''}_{target}{ext or src.suffix}"
+
+
+def plan_jobs(src, rms, sources, targets, ext=None):
     """Every (source x target) combo as (channel, target, output name); combos resolving to the same channel are merged."""
     names = labels(len(rms))
     jobs, seen = [], set()
@@ -80,17 +92,24 @@ def plan_jobs(src, rms, sources, targets):
         for t in targets:
             if (ch, t) not in seen:
                 seen.add((ch, t))
-                jobs.append((ch, t, out_name(src, t, names[ch] if len(sources) > 1 else None)))
+                jobs.append((ch, t, out_name(src, t, names[ch] if len(sources) > 1 else None, ext)))
     return jobs
 
 
-def route(src, dst, info, ch, target):
-    """Write dst with input channel `ch` on the target channel(s) ("left"/"right"/"both"); all others silent."""
+def route(src, dst, info, ch, target, audio_only=False):
+    """Write dst with input channel `ch` on the target channel(s) ("left"/"right"/"both"); all others silent.
+    Video streams are copied untouched unless audio_only."""
     n = int(info["channels"])
     out_n, layout = (2, "stereo") if n <= 2 else (n, info.get("channel_layout") or f"{n}c")
     outs = {"left": [0], "right": [1], "both": range(out_n)}[target]
     pan = f"pan={layout}|" + "|".join(f"c{i}=c{ch}" for i in outs)  # unlisted output channels = silence
-    base = ["ffmpeg", "-v", "error", "-y", "-i", str(src), "-c:v", "copy", "-af", pan]
+    if audio_only:
+        maps = ["-map", "0:a:0"]
+    elif src.suffix.lower() in AUDIO_EXT:
+        maps = ["-c:v", "copy"]  # audio file: ffmpeg's default mapping keeps cover art only where the format allows it
+    else:
+        maps = ["-map", "0:v?", "-map", "0:a:0", "-c:v", "copy"]  # same audio track that analyze() measured
+    base = ["ffmpeg", "-v", "error", "-y", "-i", str(src), *maps, "-af", pan]
     keep = ["-c:a", info["codec_name"]] + (["-b:a", info["bit_rate"]] if info.get("bit_rate") else [])
     # ponytail: if the source codec has no encoder (e.g. wmapro), fall back to ffmpeg's default for the extension
     for extra in (keep, []):
@@ -139,6 +158,10 @@ def gui():
     src_on, tgt_on = cfg.get("sources", ["Auto (loudest)"]), cfg.get("targets", ["both"])
     src_vars = {s: tk.BooleanVar(value=s in src_on) for s in SOURCES}
     tgt_vars = {t: tk.BooleanVar(value=t in tgt_on) for t in TARGETS.values()}
+    mode_var = tk.StringVar(value="audio" if cfg.get("output_type") == "audio" else "same")
+
+    def audio_only():
+        return mode_var.get() == "audio"
 
     # 3. Output folder
     outf = tk.LabelFrame(root, text=" 3. Output folder (blank = next to each input file) ")
@@ -156,7 +179,8 @@ def gui():
     def save_settings():
         sources, targets = chosen()
         try:
-            SETTINGS.write_text(json.dumps({"sources": sources, "targets": targets, "out_dir": out_var.get().strip()}))
+            SETTINGS.write_text(json.dumps({"sources": sources, "targets": targets, "out_dir": out_var.get().strip(),
+                                            "output_type": mode_var.get()}))
         except OSError:
             pass  # settings are a convenience; never block the user over them
 
@@ -164,10 +188,10 @@ def gui():
         lst.delete(0, "end")
         sources, targets = chosen()
         total = 0
-        for src, _, rms in items:
+        for src, info, rms in items:
             names = labels(len(rms))
             levels = "  ".join(f"{nm} {v:6.1f} dB" for nm, v in zip(names, db(rms)))
-            jobs = plan_jobs(src, rms, sources, targets)
+            jobs = plan_jobs(src, rms, sources, targets, out_ext(src, info, audio_only()))
             total += len(jobs)
             outs = ", ".join(j[2] for j in jobs) or "(nothing selected)"
             lst.insert("end", f"{src.name}  |  {levels}  |  loudest {names[int(np.argmax(rms))]}  |  {len(jobs)} out: {outs}")
@@ -180,6 +204,7 @@ def gui():
 
     def load(paths):
         have = {p for p, _, _ in items}
+        failed = []
         for i, p in enumerate(paths, 1):
             p = Path(p)
             if p in have:
@@ -189,18 +214,23 @@ def gui():
                 info, rms, _ = analyze(p)
                 items.append((p, info, rms))
             except Exception as e:
-                messagebox.showerror("Analyze failed", str(e))
+                failed.append(str(e))
         root.config(cursor="")
         refresh()
+        if failed:  # one dialog for the whole batch (e.g. videos with no audio track)
+            messagebox.showerror("Some files skipped", "\n".join(failed[:20]) + (
+                f"\n...and {len(failed) - 20} more" if len(failed) > 20 else ""))
 
     def add_files():
-        load(filedialog.askopenfilenames(title="Select audio files", filetypes=[
-            ("Audio", " ".join(f"*{e}" for e in AUDIO_EXT)), ("All files", "*.*")]))
+        pat = lambda exts: " ".join(f"*{e}" for e in exts)
+        load(filedialog.askopenfilenames(title="Select audio or video files", filetypes=[
+            ("Audio & video", pat(AUDIO_EXT + VIDEO_EXT)), ("Audio", pat(AUDIO_EXT)), ("Video", pat(VIDEO_EXT)),
+            ("All files", "*.*")]))
 
     def add_folder():
-        folder = filedialog.askdirectory(title="Add every audio file in folder")
+        folder = filedialog.askdirectory(title="Add every audio/video file in folder")
         if folder:
-            load(sorted(p for p in Path(folder).iterdir() if p.suffix.lower() in AUDIO_EXT))
+            load(sorted(p for p in Path(folder).iterdir() if p.suffix.lower() in AUDIO_EXT + VIDEO_EXT))
 
     def remove_selected():
         for i in reversed(lst.curselection()):
@@ -231,7 +261,7 @@ def gui():
         save_settings()
         jobs, planned = [], set()
         for src, info, rms in items:
-            for ch, target, name in plan_jobs(src, rms, sources, targets):
+            for ch, target, name in plan_jobs(src, rms, sources, targets, out_ext(src, info, audio_only())):
                 dst, k = (Path(folder) if folder else src.parent) / name, 2
                 while dst in planned or dst.resolve() == src.resolve():  # same-named inputs / never touch originals
                     dst, k = dst.with_name(f"{Path(name).stem}_{k}{dst.suffix}"), k + 1
@@ -249,7 +279,7 @@ def gui():
         for i, (src, info, ch, target, dst) in enumerate(jobs, 1):
             busy(f"Writing {i}/{len(jobs)}: {dst.name}")
             try:
-                route(src, dst, info, ch, target)
+                route(src, dst, info, ch, target, audio_only())
                 done += 1
             except Exception as e:
                 failed.append(f"{dst.name}: {e}")
@@ -286,6 +316,12 @@ def gui():
 
     group("Source channel:", src_vars, lambda s: s)
     group("Output to:", tgt_vars, str.capitalize)
+    row = tk.Frame(sett)
+    row.pack(fill="x", padx=6, pady=3)
+    tk.Label(row, text="Output type:", width=16, anchor="w").pack(side="left")
+    for value, text in (("same", "Same as input (videos keep their video)"), ("audio", "Audio only")):
+        tk.Radiobutton(row, text=text, variable=mode_var, value=value).pack(side="left", padx=4)
+    mode_var.trace_add("write", refresh)
 
     def on_close():
         save_settings()
@@ -330,6 +366,27 @@ def selftest():
             assert np.allclose(got, want, atol=1e-3), (src.name, ch, target, got, want)
             assert all(g == 0 for g, w in zip(got, want) if w == 0), "cleared channel not fully silent"
         assert np.allclose(analyze(st)[1], rms), "source was modified"
+
+        # video input: "same" keeps the video stream, "audio only" writes an .m4a with no video
+        vid = Path(d) / "clip.mp4"
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
+                        "-f", "lavfi", "-i", "sine=f=440:d=1", "-f", "lavfi", "-i", "sine=f=660:d=1",
+                        "-filter_complex", "[1][2]amerge=inputs=2,pan=stereo|c0=0.8*c0|c1=0.05*c1[a]",
+                        "-map", "0:v", "-map", "[a]", "-c:v", "mpeg4", "-c:a", "aac", str(vid)],
+                       check=True, creationflags=NO_WINDOW)
+        kinds = lambda p: sorted(s["codec_type"] for s in json.loads(subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "json", str(p)],
+            capture_output=True, text=True, creationflags=NO_WINDOW).stdout)["streams"])
+        vinfo, vrms, _ = analyze(vid)
+        assert int(np.argmax(vrms)) == 0, vrms
+        assert out_ext(st, info, True) == ".wav"  # audio inputs keep their own extension
+        for only, ext, want in ((False, ".mp4", ["audio", "video"]), (True, ".m4a", ["audio"])):
+            assert out_ext(vid, vinfo, only) == ext
+            dst = Path(d) / out_name(vid, "right", ext=ext)
+            route(vid, dst, vinfo, 0, "right", only)
+            assert kinds(dst) == want, (dst.name, kinds(dst))
+            got = analyze(dst)[1]
+            assert got[0] < 1e-4 and abs(got[1] - vrms[0]) < 0.01, (dst.name, got, vrms)
     print("selftest ok")
 
 
