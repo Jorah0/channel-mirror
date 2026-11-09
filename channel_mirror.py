@@ -88,6 +88,16 @@ def out_name(src, target, from_=None, ext=None):
     return f"{src.stem}{f'_from{from_}' if from_ else ''}_{target}{ext or src.suffix}"
 
 
+OUT_SUBDIR = "Channel Mirror output"
+
+
+def out_folder(src, base=""):
+    """Group outputs by where the source came from: <base>/<source folder name>/, or with no base,
+    a "Channel Mirror output" folder inside the source's own folder."""
+    # ponytail: two source folders with the same name share one folder under <base>; clashing names get _2, _3...
+    return Path(base) / src.parent.name if base else src.parent / OUT_SUBDIR
+
+
 def plan_jobs(src, rms, sources, targets, ext=None):
     """Every (source x target) combo as (channel, target, output name); combos resolving to the same channel are merged."""
     names = labels(len(rms))
@@ -186,7 +196,7 @@ def gui():
         return mode_var.get() == "audio"
 
     # 3. Output folder
-    outf = tk.LabelFrame(root, text=" 3. Output folder (blank = next to each input file) ")
+    outf = tk.LabelFrame(root, text=f' 3. Output folder (blank = a "{OUT_SUBDIR}" folder beside the inputs) ')
     outf.pack(fill="x", **pad)
     out_var = tk.StringVar(value=cfg.get("out_dir", ""))
     tk.Entry(outf, textvariable=out_var).pack(side="left", fill="x", expand=True, padx=6, pady=6)
@@ -284,7 +294,7 @@ def gui():
         jobs, planned = [], set()
         for src, info, rms in items:
             for ch, target, name in plan_jobs(src, rms, sources, targets, out_ext(src, info, audio_only())):
-                dst, k = (Path(folder) if folder else src.parent) / name, 2
+                dst, k = out_folder(src, folder) / name, 2
                 while dst in planned or dst.resolve() == src.resolve():  # same-named inputs / never touch originals
                     dst, k = dst.with_name(f"{Path(name).stem}_{k}{dst.suffix}"), k + 1
                 planned.add(dst)
@@ -301,12 +311,14 @@ def gui():
         for i, (src, info, ch, target, dst) in enumerate(jobs, 1):
             busy(f"Writing {i}/{len(jobs)}: {dst.name}")
             try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
                 route(src, dst, info, ch, target, audio_only())
                 done += 1
             except Exception as e:
                 failed.append(f"{dst.name}: {e}")
         root.config(cursor="")
-        where = folder or "next to each input file"
+        where = (f"in {folder}, one subfolder per source folder" if folder
+                 else f'in a "{OUT_SUBDIR}" folder beside each input')
         status.config(text=f"Done: {done} file(s) written ({where})" + (f", {len(failed)} failed" if failed else ""))
         msg = f"Wrote {done} file(s)\n{where}"
         if failed:
@@ -373,6 +385,9 @@ def selftest():
         write_wav(mono, [loud])
         (Path(d) / "notes.txt").write_text("x")
         assert media_files([d, st]) == [mono, st, st]  # folder -> media only, sorted; files pass through
+        song = Path("C:/music/album/song.mp3")
+        assert out_folder(song) == Path("C:/music/album") / OUT_SUBDIR
+        assert out_folder(song, "D:/out") == Path("D:/out/album")
         info, rms, _ = analyze(st)
         assert pick_source(rms, "Auto (loudest)") == (0, True), rms
         assert pick_source(rms, "R") == (1, False)

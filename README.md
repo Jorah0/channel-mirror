@@ -46,7 +46,10 @@ $s.TargetPath = (Get-Command pythonw).Source; $s.Arguments = "`"$PWD\channel_mir
 2. **Settings**: tick **Source channel** `Auto (loudest)`, `L`, `R` and **Output to** `Both`, `Left`, `Right` (`All` ticks a whole row).
    **Output type**: `Same as input` (videos keep their video, copied untouched) or `Audio only`
    (a video's audio is saved as `.m4a` / `.mp3` / `.opus` / `.ogg` / `.flac` / `.wav` to match its codec, else `.mka`).
-3. **Output folder**: type or **Browse...**; leave blank to write next to each input file.
+3. **Output folder**: outputs are grouped by the folder each input came from.
+   Blank: written to a `Channel Mirror output` folder inside each input's folder
+   (`C:\music\album\song.mp3` -> `C:\music\album\Channel Mirror output\song_left.mp3`).
+   Set (type or **Browse...**): one subfolder per source folder (`<output>\album\song_left.mp3`).
 4. **Run**. One file is written per input × source × output. Settings and output folder are remembered.
 
 Output names: `song_left.mp3`, `song_right.mp3`, `song_both.mp3`. When several sources are ticked
