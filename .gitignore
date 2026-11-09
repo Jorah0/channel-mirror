@@ -1,7 +1,12 @@
 ﻿__pycache__/
 .mypy_cache/
 .ruff_cache/
-graphify-out/
 build/
 dist/
 *.spec
+
+# Claude Code / local AI tooling (per-machine, not part of the app)
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+graphify-out/

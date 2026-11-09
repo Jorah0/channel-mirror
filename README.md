@@ -17,7 +17,15 @@ Originals are never modified.
 
 Double-click `dist\ChannelMirror.exe`, or copy it anywhere (Desktop, another PC). It still needs ffmpeg:
 either installed on PATH, or `ffmpeg.exe` + `ffprobe.exe` placed in the same folder as the exe.
-If neither is found it says so on startup.
+If neither is found it says so on startup. Prebuilt exe: see the repo's **Releases** page.
+
+**Drag and drop**: drop files or folders onto `ChannelMirror.exe` (or its shortcut) to open with them loaded.
+To add it to right-click **Send to** (run once, from this folder in PowerShell):
+
+```powershell
+$s = (New-Object -ComObject WScript.Shell).CreateShortcut("$env:APPDATA\Microsoft\Windows\SendTo\Channel Mirror.lnk")
+$s.TargetPath = "$PWD\dist\ChannelMirror.exe"; $s.Save()
+```
 
 ## Use from source
 

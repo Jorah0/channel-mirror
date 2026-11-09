@@ -124,6 +124,14 @@ def route(src, dst, info, ch, target, audio_only=False):
     raise RuntimeError(f"ffmpeg failed writing {Path(dst).name}:\n{r.stderr.strip()[-500:]}")
 
 
+def media_files(paths):
+    """Files stay as given; folders become every audio/video file directly inside them."""
+    out = []
+    for p in map(Path, paths):
+        out += sorted(q for q in p.iterdir() if q.suffix.lower() in AUDIO_EXT + VIDEO_EXT) if p.is_dir() else [p]
+    return out
+
+
 def gui():
     import tkinter as tk
     from tkinter import filedialog, messagebox
@@ -146,6 +154,9 @@ def gui():
         root.destroy()
         return
     root.title("Channel Mirror")
+    ico = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "icon.ico"  # _MEIPASS = unpacked exe bundle
+    if ico.exists():
+        root.iconbitmap(default=str(ico))
     pad = {"padx": 10, "pady": 4}
 
     # 1. Input files
@@ -241,7 +252,7 @@ def gui():
     def add_folder():
         folder = filedialog.askdirectory(title="Add every audio/video file in folder")
         if folder:
-            load(sorted(p for p in Path(folder).iterdir() if p.suffix.lower() in AUDIO_EXT + VIDEO_EXT))
+            load(media_files([folder]))
 
     def remove_selected():
         for i in reversed(lst.curselection()):
@@ -338,6 +349,10 @@ def gui():
         save_settings()
         root.destroy()
     root.protocol("WM_DELETE_WINDOW", on_close)
+    # files/folders dropped on the exe or sent via right-click "Send to" arrive as arguments
+    dropped = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if dropped:
+        root.after(100, load, media_files(dropped))
     root.mainloop()
 
 
@@ -356,6 +371,8 @@ def selftest():
         st, mono = Path(d) / "st.wav", Path(d) / "mono.wav"
         write_wav(st, [loud, quiet])
         write_wav(mono, [loud])
+        (Path(d) / "notes.txt").write_text("x")
+        assert media_files([d, st]) == [mono, st, st]  # folder -> media only, sorted; files pass through
         info, rms, _ = analyze(st)
         assert pick_source(rms, "Auto (loudest)") == (0, True), rms
         assert pick_source(rms, "R") == (1, False)
