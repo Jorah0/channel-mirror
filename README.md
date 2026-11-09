@@ -41,11 +41,23 @@ $s = (New-Object -ComObject WScript.Shell).CreateShortcut("$([Environment]::GetF
 $s.TargetPath = (Get-Command pythonw).Source; $s.Arguments = "`"$PWD\channel_mirror.py`""; $s.WorkingDirectory = "$PWD"; $s.Save()
 ```
 
-1. **Input files**: **Add files...** or **Add folder...** (every audio file in that folder). Each row shows
-   per-channel loudness (RMS dB) and the files it will produce. **Remove selected** / **Clear all** to edit the list.
+1. **Input files**: **Add files...** or **Add folder...** (every audio/video file in that folder). Any file
+   with an audio track works: common and less common audio (wav, mp3, flac, m4a, ogg, opus, wma, ape, wv, aiff,
+   ac3, dts, amr, caf...) and video (mp4, mkv, mov, avi, webm, wmv, flv, mpg, ts, m2ts, 3gp, vob...). Anything
+   else: pick **All files** in the file picker, or drag it onto the exe. Files with no audio are skipped with a message.
+   Each row shows per-channel loudness (RMS dB) and the files it will produce. **Remove selected** / **Clear all** to edit the list.
 2. **Settings**: tick **Source channel** `Auto (loudest)`, `L`, `R` and **Output to** `Both`, `Left`, `Right` (`All` ticks a whole row).
-   **Output type**: `Same as input` (videos keep their video, copied untouched) or `Audio only`
-   (a video's audio is saved as `.m4a` / `.mp3` / `.opus` / `.ogg` / `.flac` / `.wav` to match its codec, else `.mka`).
+   **Output type** (dropdown):
+   - `Same as input`: same format; videos keep their video, copied untouched.
+   - `Audio only (match source codec)`: a video's audio is saved as `.m4a` / `.mp3` / `.opus` / `.ogg` / `.flac` / `.wav` to match its codec, else `.mka`.
+   - `WAV`, `MP3`, `FLAC`, `M4A`, `OGG`, `OPUS`, `AIFF`: audio only, in that format.
+   - `MP4`, `MKV`, `MOV`: video + audio (video copied when the container allows it, else re-encoded).
+   If a format can't hold the result (e.g. 6 channels into MP3), that file is written as `.flac` (audio) or `.mkv` (video) instead.
+
+   **Length** (optional, seconds or `m:ss`): cut every output to exactly this long, with a 20 ms fade so it never clicks.
+   Blank = full length. Longer than the file = whole file, unless **Loop to fill length** is ticked, which repeats
+   the input until it reaches the length. **End at a quiet spot** ends up to 3 s earlier, at the quietest moment,
+   so it doesn't stop mid-sound.
 3. **Output folder**: outputs are grouped by the folder each input came from.
    Blank: written to a `Channel Mirror output` folder inside each input's folder
    (`C:\music\album\song.mp3` -> `C:\music\album\Channel Mirror output\song_left.mp3`).
