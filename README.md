@@ -4,6 +4,8 @@ Small desktop tool that analyzes the channels of audio or video files and writes
 source channel routed to Left, Right, or Both. Channels that aren't targets are fully silent.
 Originals are never modified.
 
+Full setup, build, release and troubleshooting guide: [SETUP.md](SETUP.md).
+
 ## Requirements
 
 - Python 3.10+ with `numpy` (`pip install numpy`)
@@ -15,9 +17,10 @@ Originals are never modified.
 .\build.ps1        # -> dist\ChannelMirror.exe (single file, no Python needed to run it)
 ```
 
-Double-click `dist\ChannelMirror.exe`, or copy it anywhere (Desktop, another PC). It still needs ffmpeg:
-either installed on PATH, or `ffmpeg.exe` + `ffprobe.exe` placed in the same folder as the exe.
-If neither is found it says so on startup. Prebuilt exe: see the repo's **Releases** page.
+Double-click `dist\ChannelMirror.exe`, or copy it anywhere (Desktop, another PC). It needs ffmpeg: on first
+start without it, a setup screen offers **Install ffmpeg** (downloads the official Windows build, ~110 MB,
+checksum-verified, into `%LOCALAPPDATA%\ChannelMirror\ffmpeg`; only once). Or install ffmpeg on PATH yourself,
+or put `ffmpeg.exe` + `ffprobe.exe` in the same folder as the exe. Prebuilt exe: see the repo's **Releases** page.
 
 **Drag and drop**: drop files or folders onto `ChannelMirror.exe` (or its shortcut) to open with them loaded.
 To add it to right-click **Send to** (run once, from this folder in PowerShell):

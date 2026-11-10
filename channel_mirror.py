@@ -42,6 +42,95 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # the packaged ChannelMirror.exe also finds ffmpeg.exe / ffprobe.exe placed next to it
 if getattr(sys, "frozen", False):
     os.environ["PATH"] = str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", "")
+# first-run setup downloads ffmpeg here when it isn't installed; always on PATH so later starts find it
+FFMPEG_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "ChannelMirror" / "ffmpeg"
+FFMPEG_ZIP = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"  # the build ffmpeg.org links for Windows
+os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + str(FFMPEG_DIR)
+BUNDLE = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))  # _MEIPASS = unpacked exe bundle
+
+
+def download_ffmpeg(progress=print, url=FFMPEG_ZIP, dest=FFMPEG_DIR):
+    """Download the ffmpeg zip, check it against its published .sha256, and put ffmpeg.exe + ffprobe.exe in dest."""
+    import hashlib
+    import tempfile
+    import urllib.request
+    import zipfile
+
+    with urllib.request.urlopen(url + ".sha256", timeout=30) as r:
+        want = r.read().decode().split()[0].lower()
+    h = hashlib.sha256()
+    with tempfile.TemporaryFile() as tmp:
+        with urllib.request.urlopen(url, timeout=30) as r:
+            total, got = int(r.headers.get("Content-Length") or 0), 0
+            while chunk := r.read(1 << 16):
+                tmp.write(chunk)
+                h.update(chunk)
+                got += len(chunk)
+                progress(f"Downloading ffmpeg... {got >> 20} MB" + (f" of {total >> 20} MB" if total else ""))
+        if h.hexdigest() != want:
+            raise RuntimeError("the download is damaged (checksum mismatch); please try again")
+        progress("Unpacking ffmpeg...")
+        dest.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(tmp) as z:
+            for name in ("ffmpeg.exe", "ffprobe.exe"):
+                member = next((m for m in z.namelist() if m.endswith("/bin/" + name)), None)
+                if not member:
+                    raise RuntimeError(f"{name} is missing from the download")
+                part = dest / (name + ".part")  # never leave a half-written exe under the real name
+                part.write_bytes(z.read(member))
+                os.replace(part, dest / name)
+
+
+def first_run_setup(root):
+    """Shown in the main window when ffmpeg isn't found: offer to download it. True once ffmpeg is usable."""
+    import tkinter as tk
+
+    root.title("Channel Mirror - first-time setup")
+    frame = tk.Frame(root, padx=28, pady=22)
+    frame.pack()
+    try:
+        img = tk.PhotoImage(file=str(BUNDLE / "icon.png"))
+        tk.Label(frame, image=img).pack()
+        frame.img = img  # keep a reference or Tk drops the picture
+    except tk.TclError:
+        pass
+    tk.Label(frame, text="Welcome to Channel Mirror", font=("Segoe UI", 14, "bold")).pack(pady=(10, 6))
+    msg = tk.Label(frame, justify="left", wraplength=440, text=(
+        "Channel Mirror uses ffmpeg (free) to read and write audio and video, and it isn't installed yet.\n\n"
+        "Install it now? About 110 MB is downloaded from gyan.dev (the Windows build linked from ffmpeg.org), "
+        f"checked, and saved to:\n{FFMPEG_DIR}\n\nThis only happens once."))
+    msg.pack()
+    bar = tk.Frame(frame)
+    bar.pack(pady=(16, 0))
+    result = tk.StringVar()
+    quit_ = lambda: result.set("quit")
+
+    def install():
+        go.config(state="disabled")
+        stop.config(state="disabled")
+        root.protocol("WM_DELETE_WINDOW", lambda: None)  # don't close mid-download
+        try:
+            download_ffmpeg(lambda m: (msg.config(text=m), root.update()))
+            if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+                result.set("ok")
+                return
+            raise RuntimeError("ffmpeg was unpacked but can't be found")
+        except Exception as e:
+            msg.config(text=f"Couldn't install ffmpeg:\n{e}\n\nCheck your internet connection and try again, or install it "
+                            "yourself:  winget install Gyan.FFmpeg  (or put ffmpeg.exe and ffprobe.exe next to "
+                            "ChannelMirror.exe), then start Channel Mirror again.")
+            go.config(state="normal", text="Try again")
+            stop.config(state="normal")
+            root.protocol("WM_DELETE_WINDOW", quit_)
+
+    go = tk.Button(bar, text="Install ffmpeg", command=install, width=16, font=("Segoe UI", 10, "bold"))
+    go.pack(side="left", padx=6)
+    stop = tk.Button(bar, text="Quit", command=quit_, width=10)
+    stop.pack(side="left", padx=6)
+    root.protocol("WM_DELETE_WINDOW", quit_)
+    root.wait_variable(result)
+    frame.destroy()
+    return result.get() == "ok"
 
 
 def probe(path):
@@ -296,16 +385,12 @@ def gui():
         pass
     items = []  # (path, info, rms)
     root = tk.Tk()
-    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
-        root.withdraw()
-        messagebox.showerror("Channel Mirror", "ffmpeg and ffprobe were not found.\n\nInstall with:  winget install Gyan.FFmpeg\n"
-                             "or put ffmpeg.exe and ffprobe.exe next to ChannelMirror.exe, then start it again.")
+    if (BUNDLE / "icon.ico").exists():
+        root.iconbitmap(default=str(BUNDLE / "icon.ico"))
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")) and not first_run_setup(root):
         root.destroy()
         return
     root.title("Channel Mirror")
-    ico = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "icon.ico"  # _MEIPASS = unpacked exe bundle
-    if ico.exists():
-        root.iconbitmap(default=str(ico))
     pad = {"padx": 10, "pady": 4}
 
     # 1. Input files
@@ -691,6 +776,25 @@ def selftest():
         for start, secs, want in ((0.5, 0.5, 0.5), (1.1, None, 1.1)):  # a middle part and the last part
             out = route(gap, Path(d) / f"part{start}.wav", ginfo, 0, "both", "same", secs, start=start)
             assert abs(analyze(out)[0]["duration"] - want) < 0.01, (start, analyze(out)[0]["duration"])
+
+        # first-run ffmpeg install: unpacks the two exes from a checksum-verified zip, refuses a damaged one
+        import hashlib
+        import zipfile
+        z = Path(d) / "ff.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("ffmpeg-x/bin/ffmpeg.exe", "A"), zf.writestr("ffmpeg-x/bin/ffprobe.exe", "B")
+        good = hashlib.sha256(z.read_bytes()).hexdigest()
+        sha = Path(d) / "ff.zip.sha256"
+        sha.write_text(good + "  ff.zip\n")
+        dest = Path(d) / "ffdl"
+        download_ffmpeg(lambda m: None, z.as_uri(), dest)
+        assert (dest / "ffmpeg.exe").read_text() == "A" and (dest / "ffprobe.exe").read_text() == "B"
+        sha.write_text("0" * 64)
+        try:
+            download_ffmpeg(lambda m: None, z.as_uri(), Path(d) / "bad")
+            raise AssertionError("damaged download was accepted")
+        except RuntimeError:
+            assert not (Path(d) / "bad").exists()
     print("selftest ok")
 
 
