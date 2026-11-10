@@ -56,8 +56,18 @@ $s.TargetPath = (Get-Command pythonw).Source; $s.Arguments = "`"$PWD\channel_mir
 
    **Length** (optional, seconds or `m:ss`): cut every output to exactly this long, with a 20 ms fade so it never clicks.
    Blank = full length. Longer than the file = whole file, unless **Loop to fill length** is ticked, which repeats
-   the input until it reaches the length. **End at a quiet spot** ends up to 3 s earlier, at the quietest moment,
-   so it doesn't stop mid-sound.
+   the input until it reaches the length. **End at a quiet spot** ends up to 3 s earlier (never more than half the
+   length), at the quietest moment, so it doesn't stop mid-sound.
+
+   **Split each file into parts** writes several files (`..._part01`, `..._part02`, ...) instead of one:
+   - Length only: parts of that length through the whole file (the last part is whatever is left).
+   - Length + **Parts**: only the first N parts of that length.
+   - Parts only: N roughly equal parts.
+
+   Parts are only ever cut at silence (or the quietest stretch, if there's no true silence): each cut sits in the
+   middle of the last quiet stretch before the length you set, so parts run about that long (usually a little
+   shorter) and never stop mid-word. Every part starts and ends in the middle of a silence. If the file itself
+   starts or ends with silence, the first part starts and the last part ends in the middle of it. Splitting never loops.
 3. **Output folder**: outputs are grouped by the folder each input came from.
    Blank: written to a `Channel Mirror output` folder inside each input's folder
    (`C:\music\album\song.mp3` -> `C:\music\album\Channel Mirror output\song_left.mp3`).

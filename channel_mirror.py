@@ -76,6 +76,7 @@ def analyze(path):
 
 QUIET_WINDOW = 3.0  # seconds before the requested length searched for a quiet place to end
 FADE = 0.02  # seconds of fade-out on every cut, so even a cut at a quiet spot can't click
+SILENCE = 10 ** (-50 / 20)  # a 20 ms block below -50 dBFS is silence
 
 
 def parse_time(text):
@@ -89,41 +90,89 @@ def parse_time(text):
     return secs
 
 
-def clip_seconds(src, info, ch, length, loop=False, quiet=False):
-    """Seconds to write (None = whole file). quiet: end up to QUIET_WINDOW s early, at the quietest
-    20 ms of channel `ch`, instead of cutting mid-sound. With loop, the timeline repeats the file."""
-    dur = info.get("duration") or 0
-    if not length or (not loop and dur and length >= dur):
-        return None
-    if not quiet:
-        return length
-    w = min(QUIET_WINDOW, length)
-    start = length - w
-
-    def decode(at, secs):  # channel `ch` from `at` for `secs` seconds, as mono float samples
+def levels(src, info, ch, at, secs, loop=False):
+    """(RMS of each ~20 ms block of channel `ch`, `secs` seconds from `at`; block length in seconds).
+    With loop the window wraps past the end of the file back to its start (maybe several times)."""
+    def decode(a, s):
         return np.frombuffer(subprocess.run(
-            ["ffmpeg", "-v", "error", "-ss", f"{at:.3f}", "-i", str(src), "-t", f"{secs:.3f}", "-map", "0:a:0",
+            ["ffmpeg", "-v", "error", "-ss", f"{a:.3f}", "-i", str(src), "-t", f"{s:.3f}", "-map", "0:a:0",
              "-af", f"pan=mono|c0=c{ch}", "-f", "f32le", "-acodec", "pcm_f32le", "-"],
             capture_output=True, creationflags=NO_WINDOW).stdout, "<f4")
 
-    if loop and dur:  # the window may wrap past the end of the file, back to its start (maybe several times)
-        parts, at, left = [], start % dur, w
+    dur = info.get("duration") or 0
+    if loop and dur:
+        parts, a, left = [], at % dur, secs
         while left > 1e-3:
-            take = min(left, dur - at)
-            parts.append(decode(at, take))
-            left, at = left - take, 0.0
-        a = np.concatenate(parts)
+            take = min(left, dur - a)
+            parts.append(decode(a, take))
+            left, a = left - take, 0.0
+        x = np.concatenate(parts)
     else:
-        a = decode(start, w)
+        x = decode(at, secs)
     sr = int(info["sample_rate"])
     blk = max(sr // 50, 1)
-    n = len(a) // blk
-    if not n:
+    n = len(x) // blk
+    return np.sqrt((x[:n * blk].reshape(n, blk).astype(np.float64) ** 2).mean(1)), blk / sr
+
+
+def clip_seconds(src, info, ch, length, loop=False, quiet=False, at=0.0):
+    """Seconds to write from `at` (None = to the end). quiet: cut in the middle of the last quiet stretch of
+    channel `ch` that starts in the QUIET_WINDOW s (at most half the length) before the requested end, instead of
+    cutting mid-sound. Quiet = silence, or within ~3.5 dB of the quietest moment there. With loop, the file repeats."""
+    dur = info.get("duration") or 0
+    if not length or (not loop and dur and at + length >= dur):
+        return None
+    if not quiet:
         return length
-    level = np.sqrt((a[:n * blk].reshape(n, blk).astype(np.float64) ** 2).mean(1))
-    # ponytail: absolute quietest block wins (latest on ties, i.e. closest to the requested length)
-    i = n - 1 - int(np.argmin(level[::-1]))
-    return start + (i + 0.5) * blk / sr
+    w = min(QUIET_WINDOW, length / 2)  # never search the first half, so a part can't shrink to nothing
+    start = at + length - w
+    # look w/2 past the requested end too, to see where a silence straddling it ends
+    level, b = levels(src, info, ch, start, w * 1.5, loop)
+    k = min(round(w / b), len(level))  # blocks before the requested end
+    if not k:
+        return length
+    q = level <= max(level[:k].min() * 1.5, SILENCE)
+    i = k - 1 - int(np.argmax(q[k - 1::-1]))  # last quiet block at or before the requested end
+    lo, hi = i, i
+    while lo > 0 and q[lo - 1]:
+        lo -= 1
+    while hi + 1 < len(q) and q[hi + 1]:
+        hi += 1
+    # ponytail: a silence longer than the search window is measured only where it's inside it
+    return start - at + (lo + hi + 1) / 2 * b
+
+
+def edges(src, info, ch):
+    """(start, end) of the file trimmed to the middle of any silence it starts / ends with (else 0 / duration)."""
+    dur = info.get("duration") or 0
+    w = min(QUIET_WINDOW, dur / 2)
+    head, b = levels(src, info, ch, 0.0, w)
+    loud = np.flatnonzero(head > SILENCE)
+    start = (loud[0] if len(loud) else len(head)) / 2 * b
+    tail, b = levels(src, info, ch, dur - w, w)
+    loud = np.flatnonzero(tail > SILENCE)
+    m = len(tail) - 1 - loud[-1] if len(loud) else len(tail)  # silent blocks at the very end
+    return start, dur - w + (len(tail) - m / 2) * b if m else dur
+
+
+def split_points(src, info, ch, length=None, count=None):
+    """Consecutive (start, seconds) parts of the file (seconds None = to the end of the file). Never loops.
+    length: parts of ~length, through the whole file or only the first `count` of them. No length: `count`
+    roughly equal parts. Every cut is in the middle of a quiet stretch (see clip_seconds), and the first part
+    starts / last part ends in the middle of any silence the file starts / ends with."""
+    dur = info.get("duration") or 0
+    first, end = edges(src, info, ch)
+    segs, at = [], first
+    while end - at > FADE and (not count or len(segs) < count):
+        # equal parts aim each cut at k/count of the file, so early cuts don't pile onto the last part
+        want = length or first + (end - first) * (len(segs) + 1) / count - at
+        if at + want >= end - 1e-6:  # the rest fits: last part runs to the end (or its trailing silence)
+            segs.append((at, None if end >= dur else end - at))
+            break
+        secs = min(clip_seconds(src, info, ch, want, quiet=True, at=at), end - at)
+        segs.append((at, secs))
+        at += secs
+    return segs
 
 
 def db(x):
@@ -178,10 +227,11 @@ def plan_jobs(src, rms, sources, targets, ext=None):
     return jobs
 
 
-def route(src, dst, info, ch, target, mode="same", seconds=None, loop=False):
+def route(src, dst, info, ch, target, mode="same", seconds=None, loop=False, start=0.0):
     """Write dst with input channel `ch` on the target channel(s) ("left"/"right"/"both"); all others silent.
     mode: "same" (videos keep their video, copied), "audio" (audio only, source codec) or an OUTPUT_TYPES extension.
     seconds: cut to this length (short fade-out); loop: repeat the input to fill `seconds`.
+    start: begin this far into the file (short fade-in), for split parts.
     If that format can't be written, falls back to .mkv (video) / .flac (audio). Returns the path written."""
     n = int(info["channels"])
     out_n, layout = (2, "stereo") if n <= 2 else (n, info.get("channel_layout") or f"{n}c")
@@ -193,6 +243,10 @@ def route(src, dst, info, ch, target, mode="same", seconds=None, loop=False):
         # ponytail: copied video can only stop on a keyframe, so its last frame may run a moment past the audio
         cut = ["-t", f"{seconds:.3f}"]
         pan += f",afade=t=out:st={max(seconds - FADE, 0):.3f}:d={FADE}"
+    if start:
+        # ponytail: copied video can only start on a keyframe too, so a part's picture may begin a moment early
+        pre += ["-ss", f"{start:.3f}"]
+        pan += f",afade=t=in:d={FADE}"
     audio_src = src.suffix.lower() in AUDIO_EXT
     video = mode in VIDEO_OUT or (mode == "same" and not audio_src)  # unknown extensions count as video: 0:V? is optional
     if mode == "same" and audio_src:
@@ -215,7 +269,7 @@ def route(src, dst, info, ch, target, mode="same", seconds=None, loop=False):
     fallback = "mkv" if video else "flac"
     if Path(dst).suffix.lower() != "." + fallback:
         # ponytail: format can't hold this (6ch into mp3, read-only .ape, ...); fallback file overwrites without asking
-        return route(src, Path(dst).with_suffix("." + fallback), info, ch, target, fallback, seconds, loop)
+        return route(src, Path(dst).with_suffix("." + fallback), info, ch, target, fallback, seconds, loop, start)
     raise RuntimeError(f"ffmpeg failed writing {Path(dst).name}:\n{r.stderr.strip()[-500:]}")
 
 
@@ -279,6 +333,7 @@ def gui():
     mode_var = tk.StringVar(value=cfg.get("output_type") if cfg.get("output_type") in label_of else "same")
     len_var = tk.StringVar(value=cfg.get("length", ""))
     loop_var, quiet_var = tk.BooleanVar(value=cfg.get("loop", False)), tk.BooleanVar(value=cfg.get("quiet", False))
+    split_var, parts_var = tk.BooleanVar(value=cfg.get("split", False)), tk.StringVar(value=cfg.get("parts", ""))
 
     # 3. Output folder
     outf = tk.LabelFrame(root, text=f' 3. Output folder (blank = a "{OUT_SUBDIR}" folder beside the inputs) ')
@@ -298,7 +353,9 @@ def gui():
         try:
             SETTINGS.write_text(json.dumps({"sources": sources, "targets": targets, "out_dir": out_var.get().strip(),
                                             "output_type": mode_var.get(), "length": len_var.get().strip(),
-                                            "loop": loop_var.get(), "quiet": quiet_var.get()}))
+                                            "loop": loop_var.get(),
+                                            "quiet": user_quiet[0] if split_var.get() else quiet_var.get(),
+                                            "split": split_var.get(), "parts": parts_var.get().strip()}))
         except OSError:
             pass  # settings are a convenience; never block the user over them
 
@@ -311,9 +368,11 @@ def gui():
             levels = "  ".join(f"{nm} {v:6.1f} dB" for nm, v in zip(names, db(rms)))
             jobs = plan_jobs(src, rms, sources, targets, out_ext(src, info, mode_var.get()))
             total += len(jobs)
-            outs = ", ".join(j[2] for j in jobs) or "(nothing selected)"
+            part = "_partNN" if split_var.get() else ""  # part count is only known once Run finds the silences
+            outs = ", ".join(f"{Path(j[2]).stem}{part}{Path(j[2]).suffix}" for j in jobs) or "(nothing selected)"
             lst.insert("end", f"{src.name}  |  {levels}  |  loudest {names[int(np.argmax(rms))]}  |  {len(jobs)} out: {outs}")
-        status.config(text=f"{len(items)} file(s) loaded, {total} output file(s) will be written.")
+        each = ", each split into parts at silences" if split_var.get() else ""
+        status.config(text=f"{len(items)} file(s) loaded, {total} output file(s) will be written{each}.")
 
     def busy(msg):
         status.config(text=msg)
@@ -374,10 +433,22 @@ def gui():
         except ValueError:
             messagebox.showerror("Length", "Length must be seconds (e.g. 30 or 12.5) or m:ss (e.g. 1:30).")
             return
-        loop, quiet = loop_var.get(), quiet_var.get()
+        loop, quiet, split = loop_var.get(), quiet_var.get(), split_var.get()
+        loop = loop and not split  # parts never wrap round to the start of the file
         if loop and not length:
             messagebox.showerror("Length", "Set a length to loop to.")
             return
+        count = None
+        if split:
+            try:
+                count = int(parts_var.get()) if parts_var.get().strip() else None
+                assert count is None or count >= 1
+            except (ValueError, AssertionError):
+                messagebox.showerror("Parts", "Parts must be a whole number of 1 or more (or blank).")
+                return
+            if not length and not count:
+                messagebox.showerror("Split", "Set a length for each part, a number of parts, or both.")
+                return
         folder = out_var.get().strip()
         if folder:
             try:
@@ -389,11 +460,19 @@ def gui():
         jobs, planned = [], set()
         for src, info, rms in items:
             for ch, target, name in plan_jobs(src, rms, sources, targets, out_ext(src, info, mode_var.get())):
-                dst, k = out_folder(src, folder) / name, 2
-                while dst in planned or dst.resolve() == src.resolve():  # same-named inputs / never touch originals
-                    dst, k = dst.with_name(f"{Path(name).stem}_{k}{dst.suffix}"), k + 1
-                planned.add(dst)
-                jobs.append((src, info, ch, target, dst))
+                if split:
+                    busy(f"Finding parts: {src.name}")
+                    segs = split_points(src, info, ch, length, count)
+                else:
+                    segs = [(0.0, clip_seconds(src, info, ch, length, loop, quiet))]
+                for n, (start, secs) in enumerate(segs, 1):
+                    nm = f"{Path(name).stem}_part{n:02d}{Path(name).suffix}" if len(segs) > 1 else name
+                    dst, k = out_folder(src, folder) / nm, 2
+                    while dst in planned or dst.resolve() == src.resolve():  # same-named inputs / never touch originals
+                        dst, k = dst.with_name(f"{Path(nm).stem}_{k}{dst.suffix}"), k + 1
+                    planned.add(dst)
+                    jobs.append((src, info, ch, target, dst, start, secs))
+        root.config(cursor="")
         existing = [j for j in jobs if j[4].exists()]
         if existing:
             ans = messagebox.askyesnocancel(
@@ -403,12 +482,11 @@ def gui():
             if not ans:
                 jobs = [j for j in jobs if not j[4].exists()]
         done, failed = 0, []
-        for i, (src, info, ch, target, dst) in enumerate(jobs, 1):
+        for i, (src, info, ch, target, dst, start, secs) in enumerate(jobs, 1):
             busy(f"Writing {i}/{len(jobs)}: {dst.name}")
             try:
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                secs = clip_seconds(src, info, ch, length, loop, quiet)
-                route(src, dst, info, ch, target, mode_var.get(), secs, loop)
+                route(src, dst, info, ch, target, mode_var.get(), secs, loop, start)
                 done += 1
             except Exception as e:
                 failed.append(f"{dst.name}: {e}")
@@ -457,10 +535,45 @@ def gui():
     row.pack(fill="x", padx=6, pady=3)
     tk.Label(row, text="Length:", width=16, anchor="w").pack(side="left")
     tk.Entry(row, textvariable=len_var, width=9).pack(side="left", padx=4)
-    tk.Label(row, text="seconds or m:ss (blank = full length)").pack(side="left")
-    tk.Checkbutton(row, text="Loop to fill length", variable=loop_var).pack(side="left", padx=(12, 4))
-    tk.Checkbutton(row, text=f"End at a quiet spot (up to {QUIET_WINDOW:g} s early)",
-                   variable=quiet_var).pack(side="left", padx=4)
+    len_hint = tk.Label(row, width=34, anchor="w")
+    len_hint.pack(side="left")
+    loop_cb = tk.Checkbutton(row, text="Loop to fill length", variable=loop_var)
+    loop_cb.pack(side="left", padx=(12, 4))
+    quiet_cb = tk.Checkbutton(row, variable=quiet_var)
+    quiet_cb.pack(side="left", padx=4)
+
+    row = tk.Frame(sett)
+    row.pack(fill="x", padx=6, pady=3)
+    tk.Label(row, text="Split:", width=16, anchor="w").pack(side="left")
+    tk.Checkbutton(row, text="Split each file into parts", variable=split_var).pack(side="left")
+    parts_lbl = tk.Label(row, text="Parts:")
+    parts_lbl.pack(side="left", padx=(12, 0))
+    parts_entry = tk.Entry(row, textvariable=parts_var, width=5)
+    parts_entry.pack(side="left", padx=4)
+    split_hint = tk.Label(row, anchor="w")
+    split_hint.pack(side="left")
+    user_quiet = [quiet_var.get()]  # the user's own quiet choice, put back when Split is turned off
+
+    def on_split(*_):
+        on = split_var.get()
+        if on:
+            user_quiet[0] = quiet_var.get()
+            quiet_var.set(True)  # parts are always cut at silences
+        else:
+            quiet_var.set(user_quiet[0])
+        loop_cb.config(state="disabled" if on else "normal")  # parts never loop
+        quiet_cb.config(state="disabled" if on else "normal",
+                        text="Cut in the middle of silences (always on when splitting)" if on
+                        else f"End at a quiet spot (up to {QUIET_WINDOW:g} s early)")
+        parts_lbl.config(state="normal" if on else "disabled")
+        parts_entry.config(state="normal" if on else "disabled")
+        len_hint.config(text="per part, seconds or m:ss (blank = use Parts)" if on
+                        else "seconds or m:ss (blank = full length)")
+        split_hint.config(text="blank = as many as fit; with no Length: this many equal parts" if on
+                          else "cuts each file at silences into parts of about Length")
+        refresh()
+    split_var.trace_add("write", on_split)
+    on_split()
 
     def on_close():
         save_settings()
@@ -561,6 +674,23 @@ def selftest():
         assert clip_seconds(gap, ginfo, 0, 2.0) == 2.0
         cut = clip_seconds(gap, ginfo, 0, 4.4, loop=True, quiet=True)  # 2nd pass's gap sits at 3.2-3.4 s
         assert 3.2 <= cut <= 3.4, cut
+
+        # split: cuts land mid-silence (gap 1.0-1.2 s -> 1.1); no silence at the file's edges = whole file used
+        for segs in (split_points(gap, ginfo, 0, 1.5), split_points(gap, ginfo, 0, count=2)):
+            assert len(segs) == 2 and segs[0][0] == 0 and abs(segs[1][0] - 1.1) < 0.03 and segs[1][1] is None, segs
+        segs = split_points(gap, ginfo, 0, 0.5, 3)  # first 3 parts of <= 0.5 s, even through unbroken sound
+        assert len(segs) == 3 and all(0 < s <= 0.5 for _, s in segs), segs
+        # silence 0-0.4, tone, silence 1.4-1.6, tone, silence 2.6-3.0: parts run 0.2-1.5 and 1.5-2.8 (silence middles)
+        pad = Path(d) / "pad.wav"
+        sil = lambda secs: np.zeros(int(44100 * secs))
+        ptone = np.concatenate([sil(0.4), loud, sil(0.2), loud, sil(0.4)])
+        write_wav(pad, [ptone, ptone])
+        pinfo = analyze(pad)[0]
+        for segs in (split_points(pad, pinfo, 0, 1.5), split_points(pad, pinfo, 0, count=2)):
+            assert np.allclose(segs, [(0.2, 1.3), (1.5, 1.3)], atol=0.03), segs
+        for start, secs, want in ((0.5, 0.5, 0.5), (1.1, None, 1.1)):  # a middle part and the last part
+            out = route(gap, Path(d) / f"part{start}.wav", ginfo, 0, "both", "same", secs, start=start)
+            assert abs(analyze(out)[0]["duration"] - want) < 0.01, (start, analyze(out)[0]["duration"])
     print("selftest ok")
 
 
