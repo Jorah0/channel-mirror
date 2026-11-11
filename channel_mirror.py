@@ -921,7 +921,7 @@ def sd_outputs(sd_dir=SD_DIR):
     return [v for v, _ in seen.most_common()]
 
 
-_win_outputs = []
+_win_outputs: list = []
 
 
 def sd_output_choices():
@@ -1003,20 +1003,501 @@ def sd_install(name, device, sounds, keys, sd_dir=SD_DIR):
     return {root / arc.split("/", 1)[1]: data for arc, data in files.items() if arc.startswith("Profiles/")}
 
 
+# --- UI toolkit: theme, tooltips, menus, key grid, cell editing, dialogs (stdlib tkinter only) ---
+UI = {"bg": "#f3f4f6", "panel": "#ffffff", "border": "#d1d5db", "text": "#1f2937", "muted": "#6b7280",
+      "accent": "#2563eb", "accent2": "#1d4ed8", "sound": "#d1fae5", "missing": "#fee2e2", "other": "#e5e7eb",
+      "auto": "#e0e7ff", "empty": "#ffffff", "font": ("Segoe UI", 10), "small": ("Segoe UI", 8)}
+
+
+def ui_theme(root):
+    """One light theme for every widget: ttk styles plus matching defaults for the classic tk widgets."""
+    from tkinter import ttk
+    c = UI
+    root.configure(bg=c["bg"])
+    for pat, val in (("*Background", c["bg"]), ("*Foreground", c["text"]), ("*Font", "{Segoe UI} 10"),
+                     ("*Listbox.background", c["panel"]), ("*Text.background", c["panel"]),
+                     ("*selectBackground", c["accent"]), ("*selectForeground", "#ffffff"),
+                     ("*Scale.highlightThickness", 0), ("*Scale.troughColor", c["border"]),
+                     ("*Scale.sliderRelief", "flat"), ("*Scale.borderWidth", 0), ("*Scale.activeBackground", c["accent"]),
+                     ("*TCombobox*Listbox.background", c["panel"]), ("*TCombobox*Listbox.font", "{Segoe UI} 10"),
+                     ("*Menu.background", c["panel"]), ("*Menu.activeBackground", c["accent"]),
+                     ("*Menu.activeForeground", "#ffffff"), ("*Menu.relief", "flat")):
+        root.option_add(pat, val)
+    s = ttk.Style(root)
+    s.theme_use("clam")
+    s.configure(".", background=c["bg"], foreground=c["text"], font=c["font"], bordercolor=c["border"],
+                lightcolor=c["bg"], darkcolor=c["bg"], troughcolor=c["border"], focuscolor=c["accent"])
+    s.configure("TButton", padding=(10, 4), background="#e8ebf0")
+    s.map("TButton", background=[("pressed", "#d1d6de"), ("active", "#dde2e9"), ("disabled", c["bg"])])
+    s.configure("Accent.TButton", background=c["accent"], foreground="#ffffff", font=("Segoe UI", 10, "bold"),
+                padding=(16, 6))
+    s.map("Accent.TButton", background=[("pressed", c["accent2"]), ("active", c["accent2"]), ("disabled", "#9db7f0")],
+          foreground=[("disabled", "#eef2ff")])
+    s.configure("Tool.TButton", padding=(8, 2), width=0)
+    s.configure("Toolbutton", padding=(12, 7), anchor="w", background=c["bg"])
+    s.map("Toolbutton", background=[("selected", c["accent"]), ("active", "#dde2e9")],
+          foreground=[("selected", "#ffffff")])
+    s.configure("TLabelframe", background=c["bg"], bordercolor=c["border"], relief="solid", padding=10)
+    s.configure("TLabelframe.Label", background=c["bg"], foreground=c["text"], font=("Segoe UI", 10, "bold"))
+    s.configure("TNotebook", background=c["bg"], borderwidth=0, tabmargins=(10, 6, 10, 0))
+    s.configure("TNotebook.Tab", padding=(18, 7), background="#e5e8ed")
+    s.map("TNotebook.Tab", background=[("selected", c["panel"])], expand=[("selected", (1, 1, 1, 0))])
+    from tkinter import font as tkfont
+    line = tkfont.Font(root=root, family="Segoe UI", size=10).metrics("linespace")  # scales with Windows DPI
+    s.configure("Treeview", background=c["panel"], fieldbackground=c["panel"], rowheight=line + 8,
+                bordercolor=c["border"])
+    for w in ("TCheckbutton", "TRadiobutton"):
+        s.configure(w, indicatorbackground=c["panel"], indicatorforeground=c["accent"], indicatormargin=(0, 0, 6, 0))
+        s.map(w, background=[("disabled", c["bg"]), ("active", c["bg"])],
+              indicatorbackground=[("disabled", c["bg"]), ("pressed", c["border"])])
+    s.map("Treeview", background=[("selected", c["accent"])], foreground=[("selected", "#ffffff")])
+    s.configure("Treeview.Heading", background="#eceff3", font=("Segoe UI", 9, "bold"), padding=(6, 4), relief="flat")
+    for w in ("TEntry", "TCombobox", "TSpinbox"):
+        s.configure(w, fieldbackground=c["panel"], padding=3)
+    s.map("TCombobox", fieldbackground=[("readonly", c["panel"])])
+    s.configure("Hint.TLabel", foreground=c["muted"], font=("Segoe UI", 9))
+    s.configure("Field.TLabel", foreground=c["muted"], font=("Segoe UI", 8, "bold"))
+    s.configure("Status.TLabel", padding=(2, 4))
+    s.configure("Header.TFrame", background=c["panel"])
+    s.configure("Header.TLabel", background=c["panel"])
+    s.configure("HeadTitle.TLabel", background=c["panel"], font=("Segoe UI", 15, "bold"))
+    s.configure("HeadSub.TLabel", background=c["panel"], foreground=c["muted"])
+
+
+class Tip:
+    """Hover help for a widget; text may be a function so it can describe the widget's current state."""
+
+    def __init__(self, widget, text):
+        self.w, self.text, self.win, self.job = widget, text, None, None
+        widget.bind("<Enter>", lambda e: self.later(), add="+")
+        widget.bind("<Leave>", lambda e: self.hide(), add="+")
+        widget.bind("<ButtonPress>", lambda e: self.hide(), add="+")
+
+    def later(self):
+        self.hide()
+        self.job = self.w.after(500, self.show)
+
+    def show(self):
+        import tkinter as tk
+        text = self.text() if callable(self.text) else self.text
+        if not text or not self.w.winfo_exists():
+            return
+        self.win = tk.Toplevel(self.w)
+        self.win.wm_overrideredirect(True)
+        self.win.wm_geometry(f"+{self.w.winfo_rootx() + 12}+{self.w.winfo_rooty() + self.w.winfo_height() + 4}")
+        tk.Label(self.win, text=text, justify="left", bg="#111827", fg="#f9fafb", font=("Segoe UI", 9),
+                 padx=8, pady=5, wraplength=420).pack()
+
+    def hide(self):
+        if self.job:
+            self.w.after_cancel(self.job)
+            self.job = None
+        if self.win:
+            self.win.destroy()
+            self.win = None
+
+
+def ui_menu(widget, event, items):
+    """Right-click menu. items: (label, command) pairs, None = separator, command None = greyed out."""
+    import tkinter as tk
+    m = tk.Menu(widget, tearoff=0)
+    for it in items:
+        if it is None:
+            m.add_separator()
+        else:
+            m.add_command(label=it[0], command=it[1] or (lambda: None), state="normal" if it[1] else "disabled")
+    try:
+        m.tk_popup(event.x_root, event.y_root)
+    finally:
+        m.grab_release()
+
+
+def ui_busy_focus(widget):
+    """True while the user is typing somewhere (keyboard shortcuts then leave the keys alone)."""
+    try:
+        cls = widget.tk.call("winfo", "class", widget.tk.call("focus"))
+    except Exception:
+        return False
+    return cls in ("Entry", "TEntry", "Text", "TCombobox", "TSpinbox", "Spinbox")
+
+
+def ui_keys(page, bindings):
+    """Keyboard shortcuts that only act while this tab is showing and nobody is typing."""
+    top = page.winfo_toplevel()
+    for seq, fn in bindings.items():
+        def handler(e, fn=fn):
+            if page.winfo_ismapped() and not ui_busy_focus(page):
+                fn()
+                return "break"
+        for s in {seq, seq[:-2] + seq[-2].upper() + ">"} if seq.startswith("<Control-") else {seq}:
+            top.bind(s, handler, add="+")
+
+
+class DeckGrid:
+    """A Stream Deck key grid of flat tiles. tile(pos) -> (text, bg, fg) with pos = "col,row" counted from 0.
+    Click / double-click / right-click call back with (pos, event); dragging one key onto another calls
+    on_drop(src, dst); tip(pos) gives hover text; key_at() lets other widgets drop things onto keys."""
+
+    def __init__(self, parent, tile, on_click=None, on_double=None, on_menu=None, on_drop=None, tip=None):
+        import tkinter as tk
+        self.frame = tk.Frame(parent, bg=UI["bg"])
+        self.tile, self.on_click, self.on_double, self.on_menu, self.on_drop, self.tip = (
+            tile, on_click, on_double, on_menu, on_drop, tip)
+        self.tiles, self.size, self.drag = {}, None, {}
+
+    def draw(self, cols, rows):
+        import tkinter as tk
+        if self.size != (cols, rows):  # tiles are kept between draws so double-clicks register
+            for w in self.frame.winfo_children():
+                w.destroy()
+            self.tiles, self.size = {}, (cols, rows)
+            for r in range(rows):
+                for c in range(cols):
+                    pos = f"{c},{r}"
+                    w = tk.Label(self.frame, width=12, height=3, font=UI["small"], wraplength=96, justify="center",
+                                 bd=0, highlightthickness=2, cursor="hand2")
+                    w.grid(row=r, column=c, padx=3, pady=3)
+                    w.bind("<ButtonPress-1>", lambda e, p=pos: self.drag.update(src=p, x=e.x_root, y=e.y_root))
+                    w.bind("<B1-Motion>", self._motion)
+                    w.bind("<ButtonRelease-1>", lambda e, p=pos: self._release(e, p))
+                    w.bind("<Double-Button-1>", lambda e, p=pos: self.on_double and self.on_double(p, e))
+                    w.bind("<Button-3>", lambda e, p=pos: self.on_menu and self.on_menu(p, e))
+                    if self.tip:
+                        Tip(w, lambda p=pos: self.tip(p))
+                    self.tiles[pos] = w
+        for pos, w in self.tiles.items():
+            text, bg, fg = self.tile(pos)
+            w.config(text=text, bg=bg, fg=fg,
+                     highlightbackground=UI["accent2"] if bg == UI["accent"] else UI["border"])
+
+    def _motion(self, e):
+        d = self.drag
+        if d and not d.get("moved") and abs(e.x_root - d["x"]) + abs(e.y_root - d["y"]) > 8:
+            d["moved"] = True
+            self.tiles[d["src"]].config(cursor="fleur")
+
+    def _release(self, e, pos):
+        d, self.drag = self.drag, {}
+        if d.get("moved"):
+            self.tiles[d["src"]].config(cursor="hand2")
+            dst = self.key_at(e.x_root, e.y_root)
+            if dst and dst != d["src"] and self.on_drop:
+                self.on_drop(d["src"], dst)
+        elif self.on_click:
+            self.on_click(pos, e)
+
+    def key_at(self, x, y):
+        w = self.frame.winfo_containing(x, y)
+        return next((p for p, t in self.tiles.items() if t is w), None)
+
+
+def ui_cell_edit(tree, item, col, value, done, values=None, editable=False):
+    """Edit one Treeview cell in place: an entry (or a dropdown when values are given) over the cell.
+    Enter / picking a value / clicking away keeps it, Esc cancels; done(text) receives the new value."""
+    import tkinter as tk
+    from tkinter import ttk
+    box = tree.bbox(item, col)
+    if not box:
+        return
+    var = tk.StringVar(value=value)
+    ed = (ttk.Combobox(tree, textvariable=var, values=values, state="normal" if editable else "readonly")
+          if values is not None else ttk.Entry(tree, textvariable=var))
+    ed.place(x=box[0], y=box[1], width=max(box[2], 120), height=box[3])
+    ed.focus_set()
+    if values is None:
+        ed.select_range(0, "end")
+    over = []
+
+    def finish(keep):
+        if not over:
+            over.append(1)
+            val = var.get()
+            ed.destroy()
+            if keep and val != value:
+                done(val)
+
+    def away(_):  # the dropdown list is a child of the combobox: moving focus there isn't "clicking away"
+        ed.after(80, lambda: ed.winfo_exists() and not str(ed.tk.call("focus")).startswith(str(ed)) and finish(True))
+    ed.bind("<Return>", lambda e: finish(True))
+    ed.bind("<Escape>", lambda e: finish(False))
+    ed.bind("<FocusOut>", away)
+    if values is not None and not editable:
+        ed.bind("<<ComboboxSelected>>", lambda e: finish(True))
+        ed.after(10, lambda: ed.tk.call("ttk::combobox::Post", ed))
+
+
+def ui_volume(parent, var, length=150):
+    """0-100 slider with the number beside it."""
+    from tkinter import ttk
+    f = ttk.Frame(parent)
+    ttk.Scale(f, from_=0, to=100, variable=var, length=length,
+              command=lambda x: var.set(round(float(x)))).pack(side="left")
+    ttk.Label(f, textvariable=var, width=4, anchor="e").pack(side="left")
+    return f
+
+
+def ui_sound_form(parent, v):
+    """Action / fade / fade length / volume / output fields (labels above) bound to the tk variables in v."""
+    from tkinter import ttk
+    f = ttk.Frame(parent)
+    out = ttk.Combobox(f, textvariable=v["output"], width=34)
+    out.config(postcommand=lambda: out.config(values=sd_output_choices()))
+    fields = (("ACTION", ttk.Combobox(f, textvariable=v["mode"], values=SD_MODES, state="readonly", width=15)),
+              ("FADE", ttk.Combobox(f, textvariable=v["fade"], values=SD_FADES, state="readonly", width=14)),
+              ("FADE LENGTH (S)", ttk.Combobox(f, textvariable=v["fade_len"], values=("1", "2", "3", "4", "5"),
+                                               state="readonly", width=5)),
+              ("VOLUME", ui_volume(f, v["volume"])),
+              ("OUTPUT DEVICE", out))
+    for i, (label, w) in enumerate(fields):
+        ttk.Label(f, text=label, style="Field.TLabel").grid(row=0, column=i, sticky="w", padx=(0, 14))
+        w.grid(row=1, column=i, sticky="sw", padx=(0, 14))
+    Tip(out, "Devices Stream Deck has saved itself are listed first (exact); Windows device names follow.")
+    return f
+
+
+def ui_key_dialog(parent, action):
+    """Edit one key in its own window: name and look, plus every sound on it (file, playback, fade, volume,
+    output). Sounds can be added to a key (a single sound becomes a Random / Multi Action) or removed from one.
+    Returns the edited copy, or None when cancelled."""
+    import copy
+    import tkinter as tk
+    from tkinter import colorchooser, filedialog, messagebox, ttk
+    kinds = {u for u in SD_KINDS.values() if u}
+    work, result = [copy.deepcopy(action)], [None]
+    states = action.get("States") or [{}]
+    st0 = states[min(int(action.get("State") or 0), len(states) - 1)]
+    win = tk.Toplevel(parent)
+    win.title(f"Edit key - {sd_title(action).replace(chr(10), ' ') or sd_kind(action)}")
+    win.transient(parent.winfo_toplevel())
+    win.configure(bg=UI["bg"])
+    body = ttk.Frame(win, padding=16)
+    body.pack(fill="both", expand=True)
+    kind_lbl = ttk.Label(body, style="Hint.TLabel")
+    kind_lbl.pack(anchor="w", pady=(0, 8))
+
+    look = ttk.LabelFrame(body, text="Name and look")
+    look.pack(fill="x")
+    ttk.Label(look, text="NAME (Enter = new line)", style="Field.TLabel").grid(row=0, column=0, sticky="w")
+    name = tk.Text(look, height=3, width=24, relief="solid", bd=1, highlightthickness=0, wrap="none", undo=True)
+    name.insert("1.0", st0.get("Title") or "")
+    name.grid(row=1, column=0, rowspan=3, sticky="nw", padx=(0, 16))
+    show = tk.BooleanVar(value=st0.get("ShowTitle", True))
+    size = tk.StringVar(value=str(st0.get("FontSize", "")))
+    align = tk.StringVar(value=st0.get("TitleAlignment") or "bottom")
+    color = tk.StringVar(value=st0.get("TitleColor") or "")
+    ttk.Checkbutton(look, text="Show name on the key", variable=show).grid(row=1, column=1, columnspan=3, sticky="w")
+    for col, (label, w) in enumerate((
+            ("FONT SIZE", ttk.Combobox(look, textvariable=size, values=("", "7", "8", "9", "10", "11", "12", "14",
+                                                                        "16", "18", "20", "24"), width=5)),
+            ("POSITION", ttk.Combobox(look, textvariable=align, values=("top", "middle", "bottom"), state="readonly",
+                                      width=8))), 1):
+        ttk.Label(look, text=label, style="Field.TLabel").grid(row=2, column=col, sticky="w", padx=(0, 12))
+        w.grid(row=3, column=col, sticky="w", padx=(0, 12))
+    ttk.Label(look, text="COLOUR", style="Field.TLabel").grid(row=2, column=3, sticky="w")
+    cbox = ttk.Frame(look)
+    cbox.grid(row=3, column=3, sticky="w")
+    swatch = tk.Label(cbox, width=3, bg=color.get() or "#ffffff", relief="solid", bd=1)
+    swatch.pack(side="left", padx=(0, 6))
+
+    def pick_color():
+        c = colorchooser.askcolor(color.get() or "#ffffff", parent=win, title="Name colour")[1]
+        if c:
+            color.set(c)
+            swatch.config(bg=c)
+    ttk.Button(cbox, text="Pick...", style="Tool.TButton", command=pick_color).pack(side="left")
+
+    has_sounds = bool(sd_sounds(action)) or action.get("UUID") in kinds
+    if has_sounds:
+        sf = ttk.LabelFrame(body, text="Sounds on this key")
+        sf.pack(fill="both", expand=True, pady=(12, 0))
+        cols = ("file", "mode", "fade", "volume", "output")
+        tv = ttk.Treeview(sf, columns=cols, show="headings", height=6, selectmode="browse")
+        for c, h, w in zip(cols, ("File", "Action", "Fade", "Volume", "Output"), (240, 110, 130, 60, 200)):
+            tv.heading(c, text=h)
+            tv.column(c, width=w, stretch=c in ("file", "output"))
+        tv.pack(fill="both", expand=True)
+        v = {"path": tk.StringVar(), "mode": tk.StringVar(), "fade": tk.StringVar(), "fade_len": tk.StringVar(),
+             "volume": tk.IntVar(value=100), "output": tk.StringVar()}
+        fr = ttk.Frame(sf)
+        fr.pack(fill="x", pady=(10, 4))
+        ttk.Label(fr, text="FILE", style="Field.TLabel").pack(anchor="w")
+        ttk.Entry(fr, textvariable=v["path"], width=70).pack(side="left", fill="x", expand=True)
+        ui_sound_form(sf, v).pack(fill="x", pady=4)
+        btns = ttk.Frame(sf)
+        btns.pack(fill="x", pady=(6, 0))
+        loading, cur = [False], [None]
+        pick = lambda t, i: t[i] if isinstance(i, int) and 0 <= i < len(t) else t[0]
+
+        def row_of(s):
+            se = s.get("Settings", {})
+            ok = Path(se.get("path", "")).is_file()
+            return (Path(se.get("path", "")).name + ("" if ok else "  (missing)"), pick(SD_MODES, se.get("actionType")),
+                    pick(SD_FADES, se.get("fadeType")) + (f" {se.get('fadeLen', 1)}s" if se.get("fadeType") else ""),
+                    se.get("volume", 100), se.get("outputType") or "default")
+
+        def fill(select=0):
+            tv.delete(*tv.get_children())
+            for i, s in enumerate(sd_sounds(work[0])):
+                tv.insert("", "end", iid=str(i), values=row_of(s))
+            kind_lbl.config(text=f"Type: {sd_kind(work[0])}   -   select a sound to change it; changes apply as you "
+                                 "make them and are kept when you press OK")
+            if tv.get_children():
+                tv.selection_set(str(min(select, len(tv.get_children()) - 1)))
+
+        def on_sel(_=None):
+            sel = tv.selection()
+            if not sel:
+                return
+            cur[0] = sd_sounds(work[0])[int(sel[0])]
+            se = cur[0].setdefault("Settings", {})
+            loading[0] = True
+            v["path"].set(se.get("path", ""))
+            v["mode"].set(pick(SD_MODES, se.get("actionType")))
+            v["fade"].set(pick(SD_FADES, se.get("fadeType")))
+            v["fade_len"].set(str(se.get("fadeLen", 1)))
+            v["volume"].set(int(se.get("volume", 100)))
+            v["output"].set(se.get("outputType") or SD_DEFAULT_OUT)
+            loading[0] = False
+
+        def on_var(*_):
+            if loading[0] or not cur[0]:
+                return
+            try:
+                vol = int(v["volume"].get())
+            except (tk.TclError, ValueError):
+                return
+            cur[0].setdefault("Settings", {})["path"] = v["path"].get().strip()
+            sd_set_sound([cur[0]], v["mode"].get(), v["fade"].get(), v["fade_len"].get(), vol, output=v["output"].get())
+            if tv.selection():
+                tv.item(tv.selection()[0], values=row_of(cur[0]))
+        for var in v.values():
+            var.trace_add("write", on_var)
+        tv.bind("<<TreeviewSelect>>", on_sel)
+
+        def inner():
+            a = work[0]
+            if a.get("UUID") in kinds:
+                if not a.get("Actions"):
+                    a["Actions"] = [{"Actions": []}]
+                return a["Actions"][0].setdefault("Actions", [])
+            return None
+
+        def add_sounds():
+            files = filedialog.askopenfilenames(parent=win, title="Add sounds to this key", filetypes=[
+                ("Audio", " ".join(f"*{e}" for e in AUDIO_EXT)), ("All files", "*.*")])
+            if not files:
+                return
+            base = (cur[0] or {}).get("Settings", {})
+            plays = [sd_play(f, Path(f).stem[:20], pick(SD_MODES, base.get("actionType")),
+                             pick(SD_FADES, base.get("fadeType")), base.get("fadeLen", 1), base.get("volume", 100),
+                             base.get("outputType", "")) for f in files]
+            lst = inner()
+            if lst is None:  # a single sound: becomes a Random or Multi Action holding it and the new ones
+                ans = messagebox.askyesnocancel("Add sounds", "This key plays one sound. Turn it into a Random Action "
+                                                "(one random sound per press)?\n\nNo = Multi Action (all play together)",
+                                                parent=win)
+                if ans is None:
+                    return
+                old = work[0]
+                work[0] = sd_wrap("Random Action" if ans else "Multi Action", sd_title(old), [old] + plays)
+                work[0]["States"] = copy.deepcopy(old.get("States") or [{}])
+            else:
+                lst.extend(plays)
+            fill(len(sd_sounds(work[0])) - 1)
+
+        def reorder(step):
+            lst, s = inner(), cur[0]
+            i = next((n for n, x in enumerate(lst or []) if x is s), None)
+            if i is None:
+                return
+            if step == 0:
+                if len(lst) < 2:
+                    return messagebox.showinfo("Remove", "A key needs at least one sound.", parent=win)
+                del lst[i]
+                return fill(i)
+            j = i + step
+            if 0 <= j < len(lst):
+                lst[i], lst[j] = lst[j], lst[i]
+                fill(j)
+
+        def preview():
+            if cur[0] and Path(cur[0]["Settings"].get("path", "")).is_file():
+                os.startfile(cur[0]["Settings"]["path"])
+
+        def browse():
+            f = filedialog.askopenfilename(parent=win, title="Sound file", filetypes=[
+                ("Audio", " ".join(f"*{e}" for e in AUDIO_EXT)), ("All files", "*.*")])
+            if f:
+                v["path"].set(str(Path(f)))
+        ttk.Button(fr, text="Browse...", style="Tool.TButton", command=browse).pack(side="left", padx=(6, 0))
+        ttk.Button(fr, text="Preview", style="Tool.TButton", command=preview).pack(side="left", padx=(6, 0))
+        for text, cmd in (("Add sounds...", add_sounds), ("Remove sound", lambda: reorder(0)),
+                          ("Move up", lambda: reorder(-1)), ("Move down", lambda: reorder(1))):
+            ttk.Button(btns, text=text, style="Tool.TButton", command=cmd).pack(side="left", padx=(0, 6))
+        fill()
+    else:
+        kind_lbl.config(text=f"Type: {sd_kind(action)}   -   this key isn't a sound; its name and look can be edited")
+
+    def ok():
+        a = work[0]
+        if not a.get("States"):
+            a["States"] = [{}]
+        for s in a["States"]:
+            s["Title"] = name.get("1.0", "end-1c")
+            if "ShowTitle" in s or show.get() != st0.get("ShowTitle", True):  # untouched defaults stay unwritten
+                s["ShowTitle"] = show.get()
+            if "TitleAlignment" in s or align.get() != (st0.get("TitleAlignment") or "bottom"):
+                s["TitleAlignment"] = align.get()
+            if size.get().strip().isdigit():
+                s["FontSize"] = int(size.get())
+            if color.get():
+                s["TitleColor"] = color.get()
+        result[0] = a
+        win.destroy()
+    bar = ttk.Frame(body)
+    bar.pack(fill="x", pady=(14, 0))
+    ttk.Button(bar, text="OK", style="Accent.TButton", command=ok).pack(side="right")
+    ttk.Button(bar, text="Cancel", command=win.destroy).pack(side="right", padx=8)
+    win.bind("<Escape>", lambda e: win.destroy())
+    win.update_idletasks()
+    p = parent.winfo_toplevel()
+    win.geometry(f"+{p.winfo_rootx() + max(0, (p.winfo_width() - win.winfo_width()) // 2)}"
+                 f"+{p.winfo_rooty() + max(0, (p.winfo_height() - win.winfo_height()) // 3)}")
+    win.grab_set()
+    win.wait_window()
+    return result[0]
+
+
+GOAL_HELP = {
+    "Set them up for a purpose": "One click sets the action, fade and (for some) volume to suit what the sounds are for.",
+    "Playback and fade": "Change how a press plays the sound. Keep = leave that setting as it is.",
+    "Volume": "Set, nudge or even out the volume of every sound on the selected keys.",
+    "Output device": "Sets every sound on the selected keys, including all sounds inside a Multi or Random Action "
+                     "(Jump to Multi / Random at the top picks one). Devices Stream Deck has saved itself are listed "
+                     "first and are exact. If a key still plays on the default output with a Windows name, set one "
+                     "key's output inside Stream Deck once, then pick the value that appears at the top here.",
+    "Key names and look": "Rename keys in bulk and change how their names look. Double-click a key to edit one.",
+    "Arrange keys": "You can also drag keys on the grid to move or swap them, and right-click a key for more.",
+    "Fix missing sound files": "Points broken sound keys (red) at a file with the same name anywhere in this folder "
+                               "- handy for profiles copied from another computer.",
+}
+
+
 def sd_editor_tab(page):
-    """Edit the buttons of profiles already in the local Stream Deck app: select keys, pick a goal, apply, save."""
+    """Edit the buttons of profiles already in the local Stream Deck app: select keys, use a tool, save."""
+    import copy
     import tkinter as tk
     from tkinter import colorchooser, filedialog, messagebox, ttk
 
-    pad = {"padx": 10, "pady": 4}
     if not (SD_DIR / "ProfilesV3").is_dir():
-        tk.Label(page, text="No local Stream Deck install found (looked in %APPDATA%\\Elgato\\StreamDeck).\n"
-                            "Install the Stream Deck app, then reopen Channel Mirror.", justify="left").pack(**pad)
+        ttk.Label(page, text="No local Stream Deck install found (looked in %APPDATA%\\Elgato\\StreamDeck).\n"
+                             "Install the Stream Deck app, then reopen Channel Mirror.", justify="left"
+                  ).pack(padx=20, pady=20, anchor="w")
         return
     plugged = sd_connected()
     kinds = {u for u in SD_KINDS.values() if u}  # Multi Action / Random Action ids
     grids = {v[1]: v[2:] for v in sd_devices(plugged=plugged).values()}  # device id -> (cols, rows)
-    profs, labels_ = {}, []
+    profs = {}
     for folder, m in sd_profiles():
         did = m.get("Device", {}).get("UUID", "")
         try:
@@ -1032,157 +1513,234 @@ def sd_editor_tab(page):
     labels_ = sorted(profs, key=lambda s: (not s.startswith("[connected]"), s.lower()))
     edits = {}  # page manifest path -> edited json (unsaved)
     st = {"pages": [], "page": None, "sel": []}
+    hist = {"undo": [], "redo": [], "clip": None}
 
-    left = tk.LabelFrame(page, text=" 1. Pick a profile and page, then click keys to select them ")
-    left.pack(side="left", fill="both", **pad)
-    right = tk.Frame(page)
-    right.pack(side="left", fill="both", expand=True, **pad)
-    prof_v, page_v = tk.StringVar(value=labels_[0] if labels_ else ""), tk.StringVar()
-    r = tk.Frame(left)
-    r.pack(fill="x", padx=6, pady=3)
-    tk.Label(r, text="Profile:").pack(side="left")
-    ttk.Combobox(r, textvariable=prof_v, values=labels_, state="readonly", width=46).pack(side="left", padx=4)
-    r = tk.Frame(left)
-    r.pack(fill="x", padx=6, pady=3)
-    tk.Label(r, text="Page:").pack(side="left")
-    page_cb = ttk.Combobox(r, textvariable=page_v, state="readonly", width=12)
-    page_cb.pack(side="left", padx=4)
-    for text, cmd in (("Select sound keys", lambda: select(lambda a: bool(sd_sounds(a)))),
-                      ("Select missing", lambda: select(lambda a: bool(sd_missing(a)))),
-                      ("Select Multi/Random", lambda: select(lambda a: bool(a) and a.get("UUID") in kinds)),
-                      ("Select all", lambda: select(bool)),
-                      ("Select none", lambda: select(lambda a: False))):
-        tk.Button(r, text=text, command=cmd).pack(side="left", padx=2)
-    r = tk.Frame(left)
-    r.pack(fill="x", padx=6, pady=3)
-    tk.Label(r, text="Multi / Random:").pack(side="left")
-    multi_v, multi_map = tk.StringVar(), {}
-    multi_cb = ttk.Combobox(r, textvariable=multi_v, state="readonly", width=60)
-    multi_cb.pack(side="left", padx=4)
-    grid = tk.Frame(left)
-    grid.pack(padx=6, pady=6)
-    tk.Label(left, text="green = sound key, red = sound file missing, grey = other action, blue = selected",
-             fg="gray").pack(anchor="w", padx=6)
-    info = tk.Listbox(left, height=8, font=("Consolas", 9))
-    info.pack(fill="both", expand=True, padx=6, pady=(2, 6))
+    # toolbar
+    bar = ttk.Frame(page, padding=(10, 10, 10, 4))
+    bar.pack(fill="x")
+    prof_v, page_v, multi_v, multi_map = tk.StringVar(value=labels_[0] if labels_ else ""), tk.StringVar(), \
+        tk.StringVar(), {}
+    ttk.Label(bar, text="Profile").pack(side="left")
+    ttk.Combobox(bar, textvariable=prof_v, values=labels_, state="readonly", width=40).pack(side="left", padx=(6, 14))
+    ttk.Label(bar, text="Page").pack(side="left")
+    page_cb = ttk.Combobox(bar, textvariable=page_v, state="readonly", width=16)
+    page_cb.pack(side="left", padx=(6, 14))
+    ttk.Label(bar, text="Jump to Multi / Random").pack(side="left")
+    multi_cb = ttk.Combobox(bar, textvariable=multi_v, state="readonly", width=44)
+    multi_cb.pack(side="left", padx=6)
+    save_btn = ttk.Button(bar, text="Save to Stream Deck", style="Accent.TButton")
+    save_btn.pack(side="right")
+    tbtn = {}
+    for name, text, tip in (("revert", "Revert", "Throw away every unsaved change (can be undone)"),
+                            ("redo", "Redo", "Ctrl+Y"), ("undo", "Undo", "Ctrl+Z")):
+        tbtn[name] = ttk.Button(bar, text=text, style="Tool.TButton")
+        tbtn[name].pack(side="right", padx=(0, 6))
+        Tip(tbtn[name], tip)
 
-    # 2. Goal-driven adjustments
-    adj = tk.LabelFrame(right, text=" 2. What do you want to do with the selected keys? ")
-    adj.pack(fill="both", expand=True)
-    goal_v = tk.StringVar(value="Set them up for a purpose")
-    goals = ("Set them up for a purpose", "Playback and fade", "Volume", "Output device", "Key names and look",
-             "Arrange keys", "Fix missing sound files")
-    ttk.Combobox(adj, textvariable=goal_v, values=goals, state="readonly", width=34).pack(anchor="w", padx=6, pady=6)
-    frames = {g: tk.Frame(adj) for g in goals}
-    o = {}  # option variables
+    panes = ttk.PanedWindow(page, orient="horizontal")
+    panes.pack(fill="both", expand=True, padx=10, pady=6)
+    left = ttk.LabelFrame(panes, text="Keys")
+    right = ttk.LabelFrame(panes, text="Tools for the selected keys")
+    panes.add(left, weight=3)
+    panes.add(right, weight=2)
+    status = ttk.Label(page, style="Status.TLabel", anchor="w",
+                       text="Pick a profile and page. Click keys to select them (Ctrl+click adds).")
+    status.pack(fill="x", padx=12, pady=(0, 8))
 
-    def row(g, label, widget_fn):
-        fr = tk.Frame(frames[g])
-        fr.pack(fill="x", padx=6, pady=3)
-        tk.Label(fr, text=label, width=18, anchor="w").pack(side="left")
-        widget_fn(fr)
+    # left: selection buttons, the deck, legend, details
+    sb = ttk.Frame(left)
+    sb.pack(fill="x")
+    ttk.Label(sb, text="Select", style="Hint.TLabel").pack(side="left", padx=(0, 6))
+    for text, test, tip in (("Sounds", lambda a: bool(sd_sounds(a)), "Every key that plays a sound"),
+                            ("Missing", lambda a: bool(sd_missing(a)), "Sound keys whose file can't be found"),
+                            ("Multi / Random", lambda a: bool(a) and a.get("UUID") in kinds, "Multi and Random Actions"),
+                            ("All", bool, "Every key in use (Ctrl+A)"), ("None", lambda a: False, "Esc")):
+        b = ttk.Button(sb, text=text, style="Tool.TButton", command=lambda t=test: select(t))
+        b.pack(side="left", padx=(0, 4))
+        Tip(b, tip)
+
+    def tile(pos):
+        a, on = keys_now().get(pos), pos in st["sel"]
+        c, r_ = map(int, pos.split(","))
+        bg = (UI["accent"] if on else UI["missing"] if a and sd_missing(a) else UI["sound"] if a and sd_sounds(a)
+              else UI["other"] if a else UI["empty"])
+        fg = "#ffffff" if on else UI["text"] if a else UI["muted"]
+        if not a:
+            return f"{c + 1},{r_ + 1}", bg, fg
+        return f"{(sd_title(a).replace(chr(10), ' ') or '-')[:22]}\n{sd_kind(a)[:16]}", bg, fg
+
+    def tip_for(pos):
+        a = keys_now().get(pos)
+        c, r_ = map(int, pos.split(","))
+        if not a:
+            return f"Empty key {c + 1},{r_ + 1}\nDouble-click to add a sound key; right-click for more."
+        lines = [f"Key {c + 1},{r_ + 1}: {sd_title(a).replace(chr(10), ' ') or '(no name)'}  -  {sd_kind(a)}"]
+        for s in sd_sounds(a)[:10]:
+            se = s.get("Settings", {})
+            miss = "" if Path(se.get("path", "")).is_file() else "   MISSING"
+            lines.append(f"  - {Path(se.get('path', '')).name}  ({SD_MODES[se.get('actionType', 0)] if se.get('actionType', 0) < 4 else '?'}"
+                         f", vol {se.get('volume', '?')}){miss}")
+        if len(sd_sounds(a)) > 10:
+            lines.append(f"  ...and {len(sd_sounds(a)) - 10} more")
+        return "\n".join(lines + ["Double-click to edit; drag to move; right-click for more."])
+
+    def click(pos, e):
+        if e.state & 0x0005:  # Ctrl / Shift: add or remove
+            st["sel"].remove(pos) if pos in st["sel"] else st["sel"].append(pos)
+        else:
+            st["sel"] = [] if st["sel"] == [pos] else [pos]
+        draw()
+
+    deck = DeckGrid(left, tile, on_click=click, on_double=lambda p, e: (edit_key(p) if keys_now().get(p)
+                                                                        else new_key(p)),
+                    on_menu=lambda p, e: key_menu(p, e), on_drop=lambda a, b: drop(a, b), tip=tip_for)
+    deck.frame.pack(pady=(10, 6))
+    legend = ttk.Frame(left)
+    legend.pack(fill="x")
+    for color, text in ((UI["sound"], "sound"), (UI["missing"], "file missing"), (UI["other"], "other action"),
+                        (UI["accent"], "selected")):
+        tk.Label(legend, bg=color, width=2, relief="solid", bd=1).pack(side="left")
+        ttk.Label(legend, text=text, style="Hint.TLabel").pack(side="left", padx=(4, 14))
+    ttk.Label(legend, text="Drag = move/swap  -  Double-click = edit  -  Right-click = more",
+              style="Hint.TLabel").pack(side="right")
+    dcols = ("key", "name", "type", "mode", "fade", "volume", "output", "file")
+    dt = ttk.Frame(left)
+    dt.pack(fill="both", expand=True, pady=(8, 0))
+    details = ttk.Treeview(dt, columns=dcols, show="headings", height=4, selectmode="browse")
+    for c, h, w in zip(dcols, ("Key", "Name", "Type", "Action", "Fade", "Vol", "Output", "File"),
+                       (45, 120, 90, 105, 120, 45, 130, 200)):
+        details.heading(c, text=h)
+        details.column(c, width=w, stretch=c in ("name", "file", "output"))
+    dys = ttk.Scrollbar(dt, command=details.yview)
+    details.config(yscrollcommand=dys.set)
+    dys.pack(side="right", fill="y")
+    details.pack(fill="both", expand=True)
+    ttk.Label(left, text="Double-click a cell above to change it; double-click File to pick another file.",
+              style="Hint.TLabel").pack(anchor="w", pady=(4, 0))
+
+    # right: tool list + options
+    goals = tuple(GOAL_HELP)
+    goal_v = tk.StringVar(value=goals[0])
+    tools = ttk.Frame(right)
+    tools.pack(side="left", fill="y", padx=(0, 12))
+    for g in goals:
+        ttk.Radiobutton(tools, text=g, value=g, variable=goal_v, style="Toolbutton").pack(fill="x", pady=1)
+    opts = ttk.Frame(right)
+    opts.pack(side="left", fill="both", expand=True)
+    help_lbl = ttk.Label(opts, style="Hint.TLabel", wraplength=420, justify="left")
+    help_lbl.pack(fill="x", pady=(0, 8))
+    holder = ttk.Frame(opts)
+    holder.pack(fill="both", expand=True)
+    apply_btn = ttk.Button(opts, text="Apply", style="Accent.TButton")
+    apply_btn.pack(anchor="e", pady=(8, 0))
+    frames = {g: ttk.Frame(holder) for g in goals}
+    o = {}
+
+    def row(g, label, make):
+        fr = ttk.Frame(frames[g])
+        fr.pack(fill="x", pady=3)
+        ttk.Label(fr, text=label, width=16).pack(side="left")
+        make(fr)
         return fr
 
-    def combo(g, key, label, values, first=None):
-        o[key] = tk.StringVar(value=first or values[0])
+    def combo(g, key, label, values, width=30):
+        o[key] = tk.StringVar(value=values[0])
         row(g, label, lambda fr: ttk.Combobox(fr, textvariable=o[key], values=values, state="readonly",
-                                               width=40).pack(side="left"))
+                                               width=width).pack(side="left"))
 
     def entry(g, key, label, value="", width=24):
         o[key] = tk.StringVar(value=value)
-        row(g, label, lambda fr: tk.Entry(fr, textvariable=o[key], width=width).pack(side="left"))
+        row(g, label, lambda fr: ttk.Entry(fr, textvariable=o[key], width=width).pack(side="left"))
 
     g = goals[0]
-    combo(g, "goal", "Purpose:", tuple(SD_GOALS))
-    goal_desc = tk.Label(frames[g], anchor="w", justify="left", fg="gray")
-    goal_desc.pack(fill="x", padx=6)
+    combo(g, "goal", "Purpose", tuple(SD_GOALS), 42)
+    goal_desc = ttk.Label(frames[g], style="Hint.TLabel")
+    goal_desc.pack(fill="x", pady=(4, 0))
     o["goal"].trace_add("write", lambda *_: goal_desc.config(text="Sets: {} / {} {}s{}".format(
         *SD_GOALS[o["goal"].get()][:3],
         f" / volume {SD_GOALS[o['goal'].get()][3]}" if SD_GOALS[o["goal"].get()][3] is not None else "")))
     o["goal"].set(o["goal"].get())
     g = goals[1]
-    combo(g, "mode", "Action:", ("Keep",) + SD_MODES)
-    combo(g, "fade", "Fade:", ("Keep",) + SD_FADES)
-    combo(g, "fade_len", "Fade length (s):", ("Keep", "1", "2", "3", "4", "5"))
+    combo(g, "mode", "Action", ("Keep",) + SD_MODES)
+    combo(g, "fade", "Fade", ("Keep",) + SD_FADES)
+    combo(g, "fade_len", "Fade length (s)", ("Keep", "1", "2", "3", "4", "5"), 8)
     g = goals[2]
-    o["vol_how"] = tk.StringVar(value="set")
-    o["vol"], o["step"] = tk.IntVar(value=80), tk.IntVar(value=-10)
-    for how, text, w in (("set", "Set to", lambda fr: tk.Scale(fr, variable=o["vol"], from_=0, to=100,
-                                                                orient="horizontal", length=160).pack(side="left")),
-                         ("step", "Change by (+/-)", lambda fr: tk.Spinbox(fr, textvariable=o["step"], from_=-100,
-                                                                           to=100, width=5).pack(side="left")),
-                         ("match", "Match loudness", lambda fr: tk.Label(
-                             fr, text="measures each file, turns the louder ones down to the quietest", fg="gray"
-                         ).pack(side="left"))):
-        fr = tk.Frame(frames[g])
-        fr.pack(fill="x", padx=6, pady=3)
-        tk.Radiobutton(fr, text=text, variable=o["vol_how"], value=how, width=16, anchor="w").pack(side="left")
-        w(fr)
+    o["vol_how"], o["vol"], o["step"] = tk.StringVar(value="set"), tk.IntVar(value=80), tk.IntVar(value=-10)
+    for how, text, make in (("set", "Set to", lambda fr: ui_volume(fr, o["vol"], 180).pack(side="left")),
+                            ("step", "Change by (+/-)", lambda fr: ttk.Spinbox(fr, textvariable=o["step"], from_=-100,
+                                                                              to=100, width=6).pack(side="left")),
+                            ("match", "Match loudness", lambda fr: ttk.Label(
+                                fr, text="measures each file; louder ones are turned down to the quietest",
+                                style="Hint.TLabel").pack(side="left"))):
+        fr = ttk.Frame(frames[g])
+        fr.pack(fill="x", pady=4)
+        ttk.Radiobutton(fr, text=text, variable=o["vol_how"], value=how, width=16).pack(side="left")
+        make(fr)
     g = goals[3]
     o["output"] = tk.StringVar(value=SD_DEFAULT_OUT)
-    ocb = []
-    row(g, "Output device:", lambda fr: ocb.append(ttk.Combobox(fr, textvariable=o["output"], width=52)))
-    ocb[0].config(postcommand=lambda: ocb[0].config(values=sd_output_choices()))
-    ocb[0].pack(side="left")
-    tk.Label(frames[g], fg="gray", justify="left", anchor="w", wraplength=540, text=(
-        "Every sound on the selected keys is set, including all sounds inside a Multi or Random Action "
-        "(use 'Multi / Random' on the left to pick one). Devices Stream Deck has saved itself are listed first "
-        "and are exact. Windows device names come after; if a key still plays on the default output with one, "
-        "set that key's output once inside Stream Deck, then pick the value that appears at the top here."
-    )).pack(fill="x", padx=6)
+
+    def out_box(fr):
+        cb = ttk.Combobox(fr, textvariable=o["output"], width=48)
+        cb.config(postcommand=lambda: cb.config(values=sd_output_choices()))
+        cb.pack(side="left")
+    row(g, "Output device", out_box)
     g = goals[4]
-    combo(g, "source", "Name from:", ("Keep", "File name", "Folder name", "Number", "Clear"))
-    entry(g, "prefix", "Add before:")
-    entry(g, "suffix", "Add after:")
-    entry(g, "find", "Replace text:")
-    entry(g, "repl", "  with:")
-    combo(g, "show", "Show name:", ("Keep", "Show", "Hide"))
-    combo(g, "size", "Font size:", ("Keep", "7", "8", "9", "10", "12", "14", "16", "18"))
-    combo(g, "align", "Name position:", ("Keep", "top", "middle", "bottom"))
+    combo(g, "source", "Name from", ("Keep", "File name", "Folder name", "Number", "Clear"))
+    entry(g, "prefix", "Add before")
+    entry(g, "suffix", "Add after")
+    entry(g, "find", "Replace text")
+    entry(g, "repl", "   with")
+    combo(g, "show", "Show name", ("Keep", "Show", "Hide"), 10)
+    combo(g, "size", "Font size", ("Keep", "7", "8", "9", "10", "12", "14", "16", "18"), 10)
+    combo(g, "align", "Name position", ("Keep", "top", "middle", "bottom"), 10)
     o["color"] = tk.StringVar(value="")
-    row(g, "Name colour:", lambda fr: (
-        tk.Button(fr, text="Pick...", command=lambda: o["color"].set(
-            colorchooser.askcolor(title="Key name colour")[1] or o["color"].get())).pack(side="left"),
-        tk.Label(fr, textvariable=o["color"]).pack(side="left", padx=4),
-        tk.Button(fr, text="Keep", command=lambda: o["color"].set("")).pack(side="left")))
+
+    def color_row(fr):
+        sw = tk.Label(fr, width=3, bg=UI["panel"], relief="solid", bd=1)
+
+        def pick():
+            c = colorchooser.askcolor(o["color"].get() or "#ffffff", title="Name colour")[1]
+            if c:
+                o["color"].set(c)
+                sw.config(bg=c, text="")
+        sw.pack(side="left", padx=(0, 6))
+        ttk.Button(fr, text="Pick...", style="Tool.TButton", command=pick).pack(side="left")
+        ttk.Button(fr, text="Keep", style="Tool.TButton",
+                   command=lambda: (o["color"].set(""), sw.config(bg=UI["panel"]))).pack(side="left", padx=4)
+    row(g, "Name colour", color_row)
     g = goals[5]
-    o["arr"] = tk.StringVar(value="move")
-    o["slot"], o["ctitle"] = tk.StringVar(value="1,1"), tk.StringVar()
+    o["arr"], o["slot"], o["ctitle"] = tk.StringVar(value="combine"), tk.StringVar(value="1,1"), tk.StringVar()
     o["ckind"] = tk.StringVar(value="Random Action")
     for how, text, extra in (
-            ("move", "Move first selected key to (col,row)",
-             lambda fr: tk.Entry(fr, textvariable=o["slot"], width=6).pack(side="left")),
             ("combine", "Combine selected into one",
              lambda fr: (ttk.Combobox(fr, textvariable=o["ckind"], values=("Random Action", "Multi Action"),
-                                      state="readonly", width=14).pack(side="left"),
-                         tk.Label(fr, text=" named ").pack(side="left"),
-                         tk.Entry(fr, textvariable=o["ctitle"], width=14).pack(side="left"))),
-            ("split", "Split Multi/Random keys into single keys", lambda fr: None),
+                                      state="readonly", width=14).pack(side="left", padx=(0, 6)),
+                         ttk.Label(fr, text="named").pack(side="left"),
+                         ttk.Entry(fr, textvariable=o["ctitle"], width=14).pack(side="left", padx=6))),
+            ("split", "Split Multi / Random keys into single keys", lambda fr: None),
+            ("move", "Move the selected key to (col,row)",
+             lambda fr: ttk.Entry(fr, textvariable=o["slot"], width=6).pack(side="left")),
             ("stop", "Add a 'Stop all audio' key at (col,row)",
-             lambda fr: tk.Entry(fr, textvariable=o["slot"], width=6).pack(side="left")),
-            ("delete", "Delete selected keys", lambda fr: None)):
-        fr = tk.Frame(frames[g])
-        fr.pack(fill="x", padx=6, pady=3)
-        tk.Radiobutton(fr, text=text, variable=o["arr"], value=how, anchor="w").pack(side="left")
+             lambda fr: ttk.Entry(fr, textvariable=o["slot"], width=6).pack(side="left")),
+            ("delete", "Delete the selected keys", lambda fr: None)):
+        fr = ttk.Frame(frames[g])
+        fr.pack(fill="x", pady=4)
+        ttk.Radiobutton(fr, text=text, variable=o["arr"], value=how).pack(side="left", padx=(0, 8))
         extra(fr)
     g = goals[6]
-    entry(g, "folder", "Search folder:", str(Path.home() / "Music"), 40)
-    row(g, "", lambda fr: tk.Button(fr, text="Browse...", command=lambda: o["folder"].set(
+    entry(g, "folder", "Search folder", str(Path.home() / "Music"), 40)
+    row(g, "", lambda fr: ttk.Button(fr, text="Browse...", style="Tool.TButton", command=lambda: o["folder"].set(
         filedialog.askdirectory(title="Folder that holds the sounds") or o["folder"].get())).pack(side="left"))
-    tk.Label(frames[g], text="Finds a file with the same name anywhere under the folder and points the key at it.",
-             fg="gray").pack(anchor="w", padx=6)
 
     def on_goal(*_):
         for f in frames.values():
             f.pack_forget()
-        frames[goal_v.get()].pack(fill="x", pady=4)
+        frames[goal_v.get()].pack(fill="both", expand=True)
+        help_lbl.config(text=GOAL_HELP[goal_v.get()])
     goal_v.trace_add("write", on_goal)
     on_goal()
 
-    bar = tk.Frame(right)
-    bar.pack(fill="x", pady=(6, 0))
-    status = tk.Label(right, anchor="w", justify="left", wraplength=560)
-
+    # state helpers
     def cur_page():
         p = st["page"]
         if p and p not in edits:
@@ -1195,49 +1753,73 @@ def sd_editor_tab(page):
 
     def size():
         folder, m = profs[prof_v.get()]
-        kp = keys_now()
         cols, rows = grids.get(m.get("Device", {}).get("UUID", ""), (5, 3))
-        for k in kp:
+        for k in keys_now():
             c, r_ = map(int, k.split(","))
             cols, rows = max(cols, c + 1), max(rows, r_ + 1)
         return cols, rows
 
-    def draw():
-        for w in grid.winfo_children():
-            w.destroy()
-        info.delete(0, "end")
-        if not st["page"]:
+    def snap():
+        return copy.deepcopy(edits), list(st["sel"])
+
+    def commit(before, msg):
+        """Record an edit for undo and show it."""
+        hist["undo"].append(before)
+        del hist["undo"][:-60]
+        hist["redo"].clear()
+        status.config(text=f"{msg}. Not saved yet - Save to Stream Deck (Ctrl+S) writes it, Ctrl+Z undoes it.")
+        list_multis()
+        draw()
+
+    def restore(frm, to, msg):
+        if not hist[frm]:
             return
+        hist[to].append(snap())
+        e, sel = hist[frm].pop()
+        edits.clear()
+        edits.update(e)
+        st["sel"] = sel
+        status.config(text=msg)
+        list_multis()
+        draw()
+
+    def kp_edit():
+        return sd_keypad(cur_page())
+
+    def draw():
+        if st["page"]:
+            deck.draw(*size())
+        details.delete(*details.get_children())
         kp = keys_now()
-        cols, rows = size()
-        for r_ in range(rows):
-            for c in range(cols):
-                k = f"{c},{r_}"
-                a = kp.get(k)
-                on = k in st["sel"]
-                bg = ("#2b6cb0" if on else "#fed7d7" if a and sd_missing(a) else "#c6f6d5" if a and sd_sounds(a)
-                      else "#e2e8f0" if a else "#ffffff")
-                text = f"{sd_title(a)[:10] or '-'}\n{sd_kind(a)[:11]}" if a else f"{c + 1},{r_ + 1}"
-                tk.Button(grid, text=text, width=10, height=3, font=("Segoe UI", 8), bg=bg,
-                          fg="white" if on else "black", relief="sunken" if on else "raised",
-                          command=lambda k=k: toggle(k)).grid(row=r_, column=c, padx=2, pady=2)
         for k in st["sel"]:
             a = kp.get(k)
             c, r_ = map(int, k.split(","))
-            info.insert("end", f"{c + 1},{r_ + 1}  {sd_title(a) if a else '(empty)'} - {sd_kind(a) if a else ''}")
-            for s in sd_sounds(a):
+            key = f"{c + 1},{r_ + 1}"
+            if not a:
+                details.insert("", "end", iid=f"e|{k}", values=(key, "(empty)", "", "", "", "", "", ""))
+                continue
+            snds = sd_sounds(a)
+            if a.get("UUID") != SD_PLAY:
+                details.insert("", "end", iid=f"k|{k}", values=(key, sd_title(a).replace("\n", " "), sd_kind(a),
+                                                               "", "", "", "", ""))
+            for i, s in enumerate(snds):
                 se = s.get("Settings", {})
-                miss = "" if Path(se.get("path", "")).is_file() else "  MISSING"
-                info.insert("end", f"      {SD_MODES[se.get('actionType', 0)] if se.get('actionType', 0) < 4 else '?'}"
-                                   f" | {SD_FADES[se.get('fadeType', 0)] if se.get('fadeType', 0) < 4 else '?'}"
-                                   f" | vol {se.get('volume', '?')} | out {se.get('outputType') or 'default'}"
-                                   f" | {Path(se.get('path', '')).name}{miss}")
+                miss = "" if Path(se.get("path", "")).is_file() else "  (missing)"
+                fade = (SD_FADES[se.get("fadeType", 0)] if se.get("fadeType", 0) < 4 else "?") + (
+                    f" {se.get('fadeLen', 1)}s" if se.get("fadeType") else "")
+                single = a.get("UUID") == SD_PLAY
+                details.insert("", "end", iid=f"s|{k}|{i}", values=(
+                    key if single else "", sd_title(a).replace("\n", " ") if single else "",
+                    "Sound" if single else "  sound", SD_MODES[se.get("actionType", 0)] if se.get("actionType", 0) < 4
+                    else "?", fade, se.get("volume", "?"), se.get("outputType") or "default",
+                    Path(se.get("path", "")).name + miss))
         dirty = sum(1 for p in edits if edits[p] != json.loads(p.read_text(encoding="utf-8")))
-        save_btn.config(text=f"Save to Stream Deck ({dirty} page(s) changed)" if dirty else "Save to Stream Deck")
-
-    def toggle(k):
-        st["sel"].remove(k) if k in st["sel"] else st["sel"].append(k)
-        draw()
+        save_btn.config(text=f"Save to Stream Deck ({dirty} page{'s' * (dirty != 1)} changed)" if dirty
+                        else "Save to Stream Deck")
+        used = sum(1 for k in st["sel"] if kp.get(k))
+        apply_btn.config(text=f"Apply to {used} key{'s' * (used != 1)}" if used else "Apply")
+        tbtn["undo"].state(["!disabled"] if hist["undo"] else ["disabled"])
+        tbtn["redo"].state(["!disabled"] if hist["redo"] else ["disabled"])
 
     def select(test):
         kp = keys_now()
@@ -1256,7 +1838,6 @@ def sd_editor_tab(page):
         list_multis()
 
     def list_multis():
-        """Fill the Multi / Random picker from every page of the profile (unsaved edits included)."""
         names = list(page_cb.cget("values"))
         pages = [(n, edits.get(p) or json.loads(p.read_text(encoding="utf-8"))) for n, p in zip(names, st["pages"])]
         multi_map.clear()
@@ -1271,10 +1852,10 @@ def sd_editor_tab(page):
         if multi_v.get() in multi_map:
             label, k = multi_map[multi_v.get()]
             if page_v.get() != label:
-                page_v.set(label)  # clears the selection
+                page_v.set(label)
             st["sel"] = [k]
             draw()
-            status.config(text=f"Selected {multi_v.get()}. Pick 'Output device' (or any goal) on the right and Apply.")
+            status.config(text=f"Selected {multi_v.get()}. Choose a tool on the right (e.g. Output device) and Apply.")
 
     def on_page(*_):
         names = list(page_cb.cget("values"))
@@ -1283,32 +1864,217 @@ def sd_editor_tab(page):
         draw()
 
     def slot(text):
-        cols, rows = size()
-        c, r_ = sd_key(text, cols, rows)
+        c, r_ = sd_key(text, *size())
         return f"{c},{r_}"
+
+    # key actions (grid, menus, shortcuts)
+    def edit_key(pos):
+        st["sel"] = [pos]
+        draw()
+        a = keys_now().get(pos)
+        new = ui_key_dialog(page, a) if a else None
+        if new is not None and new != a:
+            before = snap()
+            kp_edit()[pos] = new
+            commit(before, f"Edited key {pos_label(pos)}")
+
+    def new_key(pos):
+        files = filedialog.askopenfilenames(title=f"Sound(s) for key {pos_label(pos)}", filetypes=[
+            ("Audio", " ".join(f"*{e}" for e in AUDIO_EXT)), ("All files", "*.*")])
+        if not files:
+            return
+        plays = [sd_play(Path(f), Path(f).stem[:20]) for f in files]
+        if len(plays) == 1:
+            act = plays[0]
+        else:
+            ans = messagebox.askyesnocancel("New key", f"{len(plays)} sounds: make a Random Action (one random sound "
+                                            "per press)?\n\nNo = Multi Action (all play together)")
+            if ans is None:
+                return
+            act = sd_wrap("Random Action" if ans else "Multi Action", Path(files[0]).parent.name[:20], plays)
+        before = snap()
+        kp_edit()[pos] = act
+        st["sel"] = [pos]
+        commit(before, f"New sound key at {pos_label(pos)}")
+
+    def pos_label(pos):
+        c, r_ = map(int, pos.split(","))
+        return f"{c + 1},{r_ + 1}"
+
+    def drop(src, dst):
+        before = snap()
+        sd_move(kp_edit(), src, dst)
+        st["sel"] = [dst]
+        commit(before, f"Moved key {pos_label(src)} to {pos_label(dst)} (anything there swapped places)")
+
+    def copy_key():
+        a = next((keys_now()[k] for k in st["sel"] if keys_now().get(k)), None)
+        if a:
+            hist["clip"] = copy.deepcopy(a)
+            status.config(text=f"Copied '{sd_title(a).replace(chr(10), ' ') or sd_kind(a)}'. Select a key "
+                               "(any page or profile) and paste with Ctrl+V or right-click.")
+
+    def paste_key(pos=None):
+        if not hist["clip"] or not st["page"]:
+            return
+        pos = pos or (st["sel"][0] if len(st["sel"]) == 1 else next(iter(sd_free(keys_now(), *size())), None))
+        if not pos:
+            return messagebox.showinfo("Paste", "No free key on this page; select the key to paste onto.")
+        if keys_now().get(pos) and not messagebox.askyesno("Paste", f"Replace key {pos_label(pos)}?"):
+            return
+        before = snap()
+        kp_edit()[pos] = sd_renew(copy.deepcopy(hist["clip"]))
+        st["sel"] = [pos]
+        commit(before, f"Pasted onto key {pos_label(pos)}")
+
+    def delete_keys(keys):
+        keys = [k for k in keys if keys_now().get(k)]
+        if keys and messagebox.askyesno("Delete keys", f"Delete {len(keys)} key(s) from this page?"):
+            before = snap()
+            for k in keys:
+                kp_edit().pop(k, None)
+            st["sel"] = []
+            commit(before, f"Deleted {len(keys)} key(s)")
+
+    def preview(pos):
+        for s in sd_sounds(keys_now().get(pos)):
+            if Path(s["Settings"].get("path", "")).is_file():
+                return os.startfile(s["Settings"]["path"])
+        status.config(text="That key has no sound file that can be played.")
+
+    def combine(kind):
+        keys = [k for k in st["sel"] if keys_now().get(k)]
+        before = snap()
+        try:
+            sd_combine(kp_edit(), keys, kind, "")
+        except ValueError as e:
+            edits.clear(), edits.update(before[0])
+            return messagebox.showerror("Combine", str(e))
+        st["sel"] = [keys[0]]
+        commit(before, f"Combined {len(keys)} keys into a {kind}")
+
+    def split(pos):
+        before = snap()
+        try:
+            n = sd_split(kp_edit(), pos, *size())
+        except ValueError as e:
+            edits.clear(), edits.update(before[0])
+            return messagebox.showerror("Split", str(e))
+        commit(before, f"Split into {n} single sound keys")
+
+    def stop_key(pos):
+        before = snap()
+        kp_edit()[pos] = sd_stop_key()
+        commit(before, f"Added a Stop Audio key at {pos_label(pos)}")
+
+    def key_menu(pos, e):
+        if pos not in st["sel"]:
+            st["sel"] = [pos]
+            draw()
+        a = keys_now().get(pos)
+        multi_sel = [k for k in st["sel"] if keys_now().get(k) and sd_sounds(keys_now()[k])]
+        if a:
+            items = [("Edit key...", lambda: edit_key(pos)),
+                     ("Preview sound", (lambda: preview(pos)) if sd_sounds(a) else None), None,
+                     ("Copy key   Ctrl+C", copy_key), ("Paste here   Ctrl+V", (lambda: paste_key(pos))
+                                                       if hist["clip"] else None), None,
+                     ("Combine selected into a Random Action", (lambda: combine("Random Action"))
+                      if len(multi_sel) > 1 else None),
+                     ("Combine selected into a Multi Action", (lambda: combine("Multi Action"))
+                      if len(multi_sel) > 1 else None),
+                     ("Split into single keys", (lambda: split(pos)) if len(sd_sounds(a)) > 1 else None), None,
+                     ("Delete key   Del", lambda: delete_keys(st["sel"]))]
+        else:
+            items = [("New sound key...", lambda: new_key(pos)),
+                     ("Add 'Stop all audio' key here", lambda: stop_key(pos)),
+                     ("Paste here   Ctrl+V", (lambda: paste_key(pos)) if hist["clip"] else None)]
+        ui_menu(deck.frame, e, items)
+
+    def edit_cell(e):
+        item, col = details.identify_row(e.y), details.identify_column(e.x)
+        if not item or not col:
+            return
+        name = dcols[int(col[1:]) - 1]
+        kind, k, *idx = item.split("|")
+        if kind == "e":
+            return new_key(k)
+        a = keys_now().get(k)
+        s = sd_sounds(a)[int(idx[0])] if kind == "s" else None
+        se = (s or {}).get("Settings", {})
+        if name in ("key", "type"):
+            return edit_key(k)
+
+        def done(val, field=name):
+            before = snap()
+            live = kp_edit()[k]
+            snd = sd_sounds(live)[int(idx[0])] if kind == "s" else None
+            try:
+                if field == "name":
+                    if not live.get("States"):
+                        live["States"] = [{}]
+                    for x in live["States"]:
+                        x["Title"] = val
+                elif field == "mode":
+                    sd_set_sound([snd], mode=val)
+                elif field == "fade":
+                    sd_set_sound([snd], fade=val)
+                elif field == "volume":
+                    vol = int(val)
+                    assert 0 <= vol <= 100
+                    sd_set_sound([snd], volume=vol)
+                elif field == "output":
+                    sd_set_sound([snd], output=val)
+            except (ValueError, AssertionError):
+                return messagebox.showerror("Volume", "Volume is a whole number from 0 to 100.")
+            commit(before, f"Changed {field} on key {pos_label(k)}")
+        if name == "name" and (kind == "k" or a.get("UUID") == SD_PLAY):
+            ui_cell_edit(details, item, col, sd_title(a), done)
+        elif s is None:
+            return
+        elif name == "mode":
+            ui_cell_edit(details, item, col, details.set(item, col), done, SD_MODES)
+        elif name == "fade":
+            ui_cell_edit(details, item, col, SD_FADES[se.get("fadeType", 0)] if se.get("fadeType", 0) < 4 else "",
+                         done, SD_FADES)
+        elif name == "volume":
+            ui_cell_edit(details, item, col, str(se.get("volume", 100)), done)
+        elif name == "output":
+            ui_cell_edit(details, item, col, se.get("outputType") or SD_DEFAULT_OUT, done, sd_output_choices(), True)
+        elif name == "file":
+            f = filedialog.askopenfilename(title="Sound file", initialdir=str(Path(se.get("path", "")).parent)
+                                           if Path(se.get("path", "")).parent.is_dir() else None,
+                                           filetypes=[("Audio", " ".join(f"*{x}" for x in AUDIO_EXT)),
+                                                      ("All files", "*.*")])
+            if f:
+                before = snap()
+                sd_sounds(kp_edit()[k])[int(idx[0])]["Settings"]["path"] = str(Path(f))
+                commit(before, f"Changed the file on key {pos_label(k)}")
+    details.bind("<Double-Button-1>", edit_cell)
 
     def apply():
         if not st["page"]:
             return
-        kp = sd_keypad(cur_page())
+        kp = keys_now()
         sel = [k for k in st["sel"] if kp.get(k)]
         g = goal_v.get()
         if not sel and not (g == "Arrange keys" and o["arr"].get() == "stop"):
             return messagebox.showinfo("Select keys", "Click keys on the grid (or use the Select buttons) first.")
-        sounds = [s for k in sel for s in sd_sounds(kp[k])]
-        keep = lambda x: None if x == "Keep" else x
-        if not sounds and g in goals[:4]:  # purpose / playback / volume / output only touch Play Audio actions
+        if not [s for k in sel for s in sd_sounds(kp[k])] and g in goals[:4]:
             return messagebox.showinfo("No sounds", "The selected key(s) hold no Play Audio actions "
                                        "(e.g. a hotkey macro), so there's nothing to change.")
+        before = snap()
+        kp = kp_edit()
+        sounds = [s for k in sel for s in sd_sounds(kp[k])]
+        keep = lambda x: None if x == "Keep" else x
         try:
-            if g == "Set them up for a purpose":
+            if g == goals[0]:
                 mode, fade, secs, vol = SD_GOALS[o["goal"].get()]
                 sd_set_sound(sounds, mode, fade, secs, vol)
                 msg = f"{len(sounds)} sound(s) set up for: {o['goal'].get()}"
-            elif g == "Playback and fade":
+            elif g == goals[1]:
                 sd_set_sound(sounds, keep(o["mode"].get()), keep(o["fade"].get()), keep(o["fade_len"].get()))
                 msg = f"Playback changed on {len(sounds)} sound(s)"
-            elif g == "Volume":
+            elif g == goals[2]:
                 how = o["vol_how"].get()
                 if how == "match":
                     levels = {}
@@ -1326,11 +2092,11 @@ def sd_editor_tab(page):
                     sd_set_sound(sounds, volume=o["vol"].get() if how == "set" else None,
                                  step=int(o["step"].get()) if how == "step" else None)
                     msg = f"Volume changed on {len(sounds)} sound(s)"
-            elif g == "Output device":
+            elif g == goals[3]:
                 sd_set_sound(sounds, output=o["output"].get())
                 msg = (f"Output set to {sd_out(o['output'].get()) or 'the default device'} on {len(sounds)} "
                        f"sound(s) in {len(sel)} key(s)")
-            elif g == "Key names and look":
+            elif g == goals[4]:
                 style = {}
                 if o["show"].get() != "Keep":
                     style["ShowTitle"] = o["show"].get() == "Show"
@@ -1344,8 +2110,8 @@ def sd_editor_tab(page):
                     sd_label(kp[k], o["source"].get(), o["prefix"].get(), o["suffix"].get(), o["find"].get(),
                              o["repl"].get(), style, n)
                 msg = f"Renamed / restyled {len(sel)} key(s)"
-            elif g == "Arrange keys":
-                how, cols_rows = o["arr"].get(), size()
+            elif g == goals[5]:
+                how = o["arr"].get()
                 if how == "move":
                     dst = slot(o["slot"].get())
                     sd_move(kp, sel[0], dst)
@@ -1356,41 +2122,44 @@ def sd_editor_tab(page):
                     st["sel"] = [sel[0]]
                     msg = f"{len(sounds)} sound(s) combined into a {o['ckind'].get()}"
                 elif how == "split":
-                    n = sum(sd_split(kp, k, *cols_rows) for k in sel if len(sd_sounds(kp.get(k))) > 1)
+                    n = sum(sd_split(kp, k, *size()) for k in sel if len(sd_sounds(kp.get(k))) > 1)
                     msg = f"Split into {n} single sound keys"
                 elif how == "stop":
                     k = slot(o["slot"].get())
                     if kp.get(k) and not messagebox.askyesno("Replace key", "That key is in use. Replace it?"):
-                        return
+                        raise LookupError
                     kp[k] = sd_stop_key()
                     msg = "Added a Stop Audio key"
                 else:
                     if not messagebox.askyesno("Delete keys", f"Delete {len(sel)} key(s) from this page?"):
-                        return
+                        raise LookupError
                     for k in sel:
                         kp.pop(k, None)
                     st["sel"] = []
                     msg = f"Deleted {len(sel)} key(s)"
             else:
                 if not Path(o["folder"].get()).is_dir():
-                    return messagebox.showerror("Folder", "Pick the folder that holds your sounds.")
+                    raise ValueError("Pick the folder that holds your sounds.")
                 status.config(text="Searching...")
                 page.update()
                 fixed, still = sd_relink(sounds, o["folder"].get())
                 msg = f"Fixed {fixed} missing sound(s); {still} still missing"
-        except ValueError as e:
-            return messagebox.showerror("Can't do that", str(e))
-        status.config(text=msg + ". Not saved yet - press Save to Stream Deck.")
-        if g == "Arrange keys" or g == "Key names and look":
-            list_multis()
-        draw()
+        except (ValueError, LookupError) as e:
+            edits.clear()
+            edits.update(before[0])  # nothing half-done
+            st["sel"] = before[1]
+            draw()
+            if isinstance(e, ValueError):
+                messagebox.showerror("Can't do that", str(e))
+            return
+        commit(before, msg)
 
     def revert():
-        edits.clear()
-        st["sel"] = []
-        status.config(text="All unsaved changes thrown away.")
-        list_multis()
-        draw()
+        if edits:
+            before = snap()
+            edits.clear()
+            st["sel"] = []
+            commit(before, "All unsaved changes thrown away")
 
     def save():
         changed = {p: d for p, d in edits.items() if d != json.loads(p.read_text(encoding="utf-8"))}
@@ -1402,21 +2171,27 @@ def sd_editor_tab(page):
                 return
             if not sd_stop():
                 return messagebox.showerror("Stream Deck", "Couldn't close Stream Deck. Close it and press Save again.")
-        folders = {p.parents[2] for p in changed}
         try:
-            backup = sd_save(changed, folders)
+            backup = sd_save(changed, {p.parents[2] for p in changed})
         except OSError as e:
             return messagebox.showerror("Save", f"Couldn't write the profile:\n{e}")
         sd_start()
         edits.clear()
+        hist["undo"].clear()
+        hist["redo"].clear()
         status.config(text=f"Saved {len(changed)} page(s); Stream Deck reopened. Backup: {backup}")
+        list_multis()
         draw()
 
-    tk.Button(bar, text="Apply", command=apply, width=12, font=("Segoe UI", 10, "bold")).pack(side="left")
-    tk.Button(bar, text="Revert unsaved", command=revert, width=14).pack(side="left", padx=6)
-    save_btn = tk.Button(bar, text="Save to Stream Deck", command=save, width=34, font=("Segoe UI", 10, "bold"))
-    save_btn.pack(side="right")
-    status.pack(fill="x", pady=6)
+    apply_btn.config(command=apply)
+    save_btn.config(command=save)
+    tbtn["undo"].config(command=lambda: restore("undo", "redo", "Undone."))
+    tbtn["redo"].config(command=lambda: restore("redo", "undo", "Redone."))
+    tbtn["revert"].config(command=revert)
+    ui_keys(page, {"<Control-z>": lambda: restore("undo", "redo", "Undone."),
+                   "<Control-y>": lambda: restore("redo", "undo", "Redone."), "<Control-s>": save,
+                   "<Control-c>": copy_key, "<Control-v>": paste_key, "<Delete>": lambda: delete_keys(st["sel"]),
+                   "<Control-a>": lambda: select(bool), "<Escape>": lambda: select(lambda a: False)})
     prof_v.trace_add("write", on_prof)
     multi_v.trace_add("write", on_multi)
     page_v.trace_add("write", on_page)
@@ -1429,90 +2204,98 @@ def streamdeck_tab(page, cfg, made):
     from tkinter import filedialog, messagebox, ttk
 
     sc = cfg.setdefault("streamdeck", {})
-    sounds, keys = [], {}  # keys: 'col,row' -> {"kind", "title"}
+    sounds, keys = [], {}  # keys: 'col,row' (from 1) -> {"kind", "title"}
     cur = tk.StringVar(value="1,1")  # the deck key being edited
-    pad = {"padx": 10, "pady": 4}
+    st = {"lay": {}}
     audio_pat = " ".join(f"*{e}" for e in AUDIO_EXT)
-    top = tk.Frame(page)
-    top.pack(fill="both", expand=True)
+    one = lambda p0: "{},{}".format(*(int(x) + 1 for x in p0.split(",")))  # grid pos (from 0) -> key (from 1)
 
-    # 1. Sounds
-    box = tk.LabelFrame(top, text=" 1. Sounds (each becomes a Play Audio action) ")
-    box.pack(side="left", fill="both", expand=True, **pad)
-    side = tk.Frame(box)
-    side.pack(side="right", fill="y", padx=6, pady=4)
-    cols = ("title", "key", "mode", "fade", "volume", "output", "file")
-    heads = ("Name", "Key", "Action", "Fade", "Volume", "Output", "File")
-    tree = ttk.Treeview(box, columns=cols, show="headings", height=12)
-    for c, h, w in zip(cols, heads, (130, 45, 100, 115, 55, 70, 260)):
-        tree.heading(c, text=h)
-        tree.column(c, width=w, stretch=c == "file")
-    ys = ttk.Scrollbar(box, command=tree.yview)
-    tree.config(yscrollcommand=ys.set)
-    ys.pack(side="right", fill="y")
-    tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=4)
-
-    # 2. Deck: device, grid of keys, the selected key's action
-    deck = tk.LabelFrame(top, text=" 2. Stream Deck keys (click a key) ")
-    deck.pack(side="left", fill="y", **pad)
+    # toolbar
+    bar = ttk.Frame(page, padding=(10, 10, 10, 4))
+    bar.pack(fill="x")
     devices = sd_devices() or {"Stream Deck 5x3": ("20GBA9901", "", 5, 3)}
     k = {"profile": tk.StringVar(value=sc.get("profile", "Soundboard")),
          "device": tk.StringVar(value=sc.get("device") if sc.get("device") in devices else next(iter(devices))),
          "cols": tk.IntVar(value=sc.get("cols", 5)), "rows": tk.IntVar(value=sc.get("rows", 3))}
-    r = tk.Frame(deck)
-    r.pack(fill="x", padx=6, pady=3)
-    tk.Label(r, text="Device:").pack(side="left")
-    ttk.Combobox(r, textvariable=k["device"], values=tuple(devices), state="readonly", width=44).pack(side="left", padx=4)
-    r = tk.Frame(deck)
-    r.pack(fill="x", padx=6, pady=3)
-    tk.Label(r, text="Columns:").pack(side="left")
-    tk.Spinbox(r, textvariable=k["cols"], from_=1, to=16, width=3).pack(side="left", padx=4)
-    tk.Label(r, text="Rows:").pack(side="left")
-    tk.Spinbox(r, textvariable=k["rows"], from_=1, to=16, width=3).pack(side="left", padx=4)
-    tk.Label(r, text="Profile name:").pack(side="left", padx=(10, 0))
-    tk.Entry(r, textvariable=k["profile"], width=16).pack(side="left", padx=4)
-    grid = tk.Frame(deck)
-    grid.pack(padx=6, pady=6)
-    ke = tk.LabelFrame(deck, text=" Selected key ")
-    ke.pack(fill="x", padx=6, pady=(0, 6))
-    kind_v, title_v = tk.StringVar(value="Single sound"), tk.StringVar()
-    r = tk.Frame(ke)
-    r.pack(fill="x", padx=6, pady=3)
-    tk.Label(r, textvariable=cur, width=5, font=("Segoe UI", 10, "bold")).pack(side="left")
-    tk.Label(r, text="Action:").pack(side="left")
-    ttk.Combobox(r, textvariable=kind_v, values=tuple(SD_KINDS), state="readonly", width=14).pack(side="left", padx=4)
-    tk.Label(r, text="Key name:").pack(side="left", padx=(8, 0))
-    tk.Entry(r, textvariable=title_v, width=14).pack(side="left", padx=4)
-    kbtns = tk.Frame(ke)
-    kbtns.pack(fill="x", padx=6, pady=(0, 4))
+    adders = ttk.Frame(bar)
+    adders.pack(side="left")
+    ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=12)
+    ttk.Label(bar, text="Device").pack(side="left")
+    ttk.Combobox(bar, textvariable=k["device"], values=tuple(devices), state="readonly", width=40).pack(
+        side="left", padx=6)
+    ttk.Label(bar, text="Columns").pack(side="left", padx=(8, 0))
+    ttk.Spinbox(bar, textvariable=k["cols"], from_=1, to=16, width=3).pack(side="left", padx=4)
+    ttk.Label(bar, text="Rows").pack(side="left")
+    ttk.Spinbox(bar, textvariable=k["rows"], from_=1, to=16, width=3).pack(side="left", padx=4)
+    ttk.Label(bar, text="Profile name").pack(side="left", padx=(12, 0))
+    ttk.Entry(bar, textvariable=k["profile"], width=18).pack(side="left", padx=6)
 
-    # 3. Per-sound settings
-    ed = tk.LabelFrame(page, text=" 3. Sound settings (select sounds in the list, change, then Apply) ")
-    ed.pack(fill="x", **pad)
+    panes = ttk.PanedWindow(page, orient="horizontal")
+    panes.pack(fill="both", expand=True, padx=10, pady=6)
+    box = ttk.LabelFrame(panes, text="Sounds")
+    deckf = ttk.LabelFrame(panes, text="Stream Deck keys")
+    panes.add(box, weight=3)
+    panes.add(deckf, weight=2)
+
+    # sounds list
+    cols = ("title", "key", "mode", "fade", "volume", "output", "file")
+    tl = ttk.Frame(box)
+    tl.pack(fill="both", expand=True)
+    tree = ttk.Treeview(tl, columns=cols, show="headings", height=6)
+    for c, h, w in zip(cols, ("Name", "Key", "Action", "Fade", "Vol", "Output", "File"), (130, 50, 105, 120, 45, 110, 240)):
+        tree.heading(c, text=h)
+        tree.column(c, width=w, stretch=c in ("file", "title"))
+    ys = ttk.Scrollbar(tl, command=tree.yview)
+    tree.config(yscrollcommand=ys.set)
+    ys.pack(side="right", fill="y")
+    tree.pack(side="left", fill="both", expand=True)
+    tools = ttk.Frame(box)
+    tools.pack(fill="x", pady=(8, 0))
+    ttk.Label(box, text="Drag sounds onto a key to map them  -  double-click a cell to change it  -  right-click "
+                        "for more  -  Del removes", style="Hint.TLabel").pack(anchor="w", pady=(6, 0))
+
+    # deck
+    kgrid = DeckGrid(deckf, lambda p: tile(p), on_click=lambda p, e: pick_key(one(p)),
+                     on_double=lambda p, e: (pick_key(one(p)), title_entry.focus_set()),
+                     on_menu=lambda p, e: key_menu(one(p), e), on_drop=lambda a, b: swap_keys(one(a), one(b)),
+                     tip=lambda p: tip_for(one(p)))
+    kgrid.frame.pack(pady=(4, 8))
+    ke = ttk.LabelFrame(deckf, text="Selected key")
+    ke.pack(fill="x")
+    kind_v, title_v = tk.StringVar(value="Single sound"), tk.StringVar()
+    r = ttk.Frame(ke)
+    r.pack(fill="x")
+    ttk.Label(r, textvariable=cur, font=("Segoe UI", 12, "bold"), width=5).pack(side="left")
+    ttk.Label(r, text="Action").pack(side="left")
+    ttk.Combobox(r, textvariable=kind_v, values=tuple(SD_KINDS), state="readonly", width=14).pack(side="left", padx=6)
+    ttk.Label(r, text="Key name").pack(side="left", padx=(8, 0))
+    title_entry = ttk.Entry(r, textvariable=title_v, width=16)
+    title_entry.pack(side="left", padx=6)
+    kbtns = ttk.Frame(ke)
+    kbtns.pack(fill="x", pady=(8, 0))
+    ttk.Label(deckf, text="Click a key to select it  -  drag keys to swap them  -  right-click for more",
+              style="Hint.TLabel").pack(anchor="w", pady=(6, 0))
+
+    # per-sound settings
+    ed = ttk.LabelFrame(page, text="Sound settings  (for the selected sounds; new sounds start with these)")
+    ed.pack(fill="x", padx=10, pady=(0, 6))
     v = {"title": tk.StringVar(), "mode": tk.StringVar(value=sc.get("mode", SD_MODES[0])),
          "fade": tk.StringVar(value=sc.get("fade", SD_FADES[0])), "fade_len": tk.StringVar(value=sc.get("fade_len", "1")),
          "volume": tk.IntVar(value=sc.get("volume", 100)), "output": tk.StringVar(value=sc.get("output", ""))}
-    r = tk.Frame(ed)
-    r.pack(fill="x", padx=6, pady=3)
-    tk.Label(r, text="Name:").pack(side="left")
-    tk.Entry(r, textvariable=v["title"], width=18).pack(side="left", padx=4)
-    tk.Label(r, text="Action:").pack(side="left", padx=(10, 0))
-    ttk.Combobox(r, textvariable=v["mode"], values=SD_MODES, state="readonly", width=14).pack(side="left", padx=4)
-    tk.Label(r, text="Fade:").pack(side="left", padx=(10, 0))
-    ttk.Combobox(r, textvariable=v["fade"], values=SD_FADES, state="readonly", width=13).pack(side="left", padx=4)
-    tk.Label(r, text="Length (s):").pack(side="left", padx=(10, 0))
-    ttk.Combobox(r, textvariable=v["fade_len"], values=("1", "2", "3", "4", "5"), state="readonly",
-                 width=3).pack(side="left", padx=4)
-    tk.Label(r, text="Volume:").pack(side="left", padx=(10, 0))
-    tk.Scale(r, variable=v["volume"], from_=0, to=100, orient="horizontal", length=110).pack(side="left")
-    tk.Label(r, text="Output device (blank = default):").pack(side="left", padx=(10, 0))
-    out_cb = ttk.Combobox(r, textvariable=v["output"], width=30)
-    out_cb.config(postcommand=lambda: out_cb.config(values=sd_output_choices()))
-    out_cb.pack(side="left", padx=4)
+    er = ttk.Frame(ed)
+    er.pack(fill="x")
+    nf = ttk.Frame(er)
+    nf.pack(side="left", padx=(0, 14))
+    ttk.Label(nf, text="NAME", style="Field.TLabel").pack(anchor="w")
+    ttk.Entry(nf, textvariable=v["title"], width=20).pack()
+    ui_sound_form(er, v).pack(side="left")
+    apply_btn = ttk.Button(er, text="Apply to selected")
+    apply_btn.pack(side="right", anchor="s")
 
-    bar = tk.Frame(page)
-    bar.pack(fill="x", padx=10, pady=(4, 10))
-    status = tk.Label(bar, anchor="w", text="Add sounds, click a key, assign them, then Send to Stream Deck.")
+    runbar = ttk.Frame(page, padding=(10, 2, 10, 10))
+    runbar.pack(fill="x")
+    status = ttk.Label(runbar, style="Status.TLabel", anchor="w",
+                       text="Add sounds, map them to keys, then Send to Stream Deck.")
 
     def deck_size():
         try:
@@ -1520,35 +2303,47 @@ def streamdeck_tab(page, cfg, made):
         except (tk.TclError, ValueError):
             return 5, 3
 
-    def show():
+    def show(keep=None):
+        sel = keep if keep is not None else tree.selection()
         tree.delete(*tree.get_children())
         for i, s in enumerate(sounds):
             tree.insert("", "end", iid=str(i), values=(s["title"], s["key"] or "auto", s["mode"],
                         s["fade"] + (f" {s['fade_len']}s" if s["fade"] != SD_FADES[0] else ""),
-                        s["volume"], s["output"] or "default", s["path"]))
+                        s["volume"], sd_out(s["output"]) or "default", s["path"]))
+        tree.selection_set([i for i in sel if tree.exists(i)])
         draw()
 
     def draw():
-        for w in grid.winfo_children():
-            w.destroy()
         c_n, r_n = deck_size()
         try:
-            lay = {f"{c + 1},{r + 1}": x for (c, r), x in sd_layout(sounds, keys, c_n, r_n).items()}
-        except ValueError:
-            lay = {}  # mid-edit conflict; Send reports it
-        for r in range(r_n):
-            for c in range(c_n):
-                pos = f"{c + 1},{r + 1}"
-                kind, title, group = lay.get(pos, ("", "", []))
-                auto = group and not group[0]["key"]
-                text = (f"{title[:10]}\n{'auto' if auto else kind.split()[0]}"
-                        + (f" x{len(group)}" if len(group) > 1 else "")) if group else pos
-                tk.Button(grid, text=text, width=10, height=3, font=("Segoe UI", 8),
-                          relief="sunken" if pos == cur.get() else "raised",
-                          bg="#2b6cb0" if pos == cur.get() else ("#c6f6d5" if group and not auto else
-                                                                 "#edf2f7" if auto else "#ffffff"),
-                          fg="white" if pos == cur.get() else "black",
-                          command=lambda p=pos: pick_key(p)).grid(row=r, column=c, padx=2, pady=2)
+            st["lay"] = {f"{c + 1},{r + 1}": x for (c, r), x in sd_layout(sounds, keys, c_n, r_n).items()}
+            status_note = ""
+        except ValueError as e:
+            st["lay"], status_note = {}, str(e)  # mid-edit conflict; shown, and Send reports it too
+        kgrid.draw(c_n, r_n)
+        if status_note:
+            status.config(text=status_note)
+
+    def tile(p0):
+        pos = one(p0)
+        kind, title, group = st["lay"].get(pos, ("", "", []))
+        auto = bool(group) and not group[0]["key"]
+        if pos == cur.get():
+            bg, fg = UI["accent"], "#ffffff"
+        else:
+            bg, fg = (UI["auto"] if auto else UI["sound"] if group else UI["empty"]), (UI["text"] if group else UI["muted"])
+        if not group:
+            return pos, bg, fg
+        label = "auto" if auto else kind.split()[0]
+        return f"{title[:22]}\n{label}" + (f" x{len(group)}" if len(group) > 1 else ""), bg, fg
+
+    def tip_for(pos):
+        kind, title, group = st["lay"].get(pos, ("", "", []))
+        if not group:
+            return f"Key {pos} is free.\nDrag sounds here, or right-click to add a folder or files."
+        auto = "  (placed automatically - drag it to pin it)" if not group[0]["key"] else ""
+        return "\n".join([f"Key {pos}: {title} - {kind}{auto}"] + [f"  - {Path(s['path']).name}" for s in group[:10]]
+                         + ([f"  ...and {len(group) - 10} more"] if len(group) > 10 else []))
 
     def pick_key(pos):
         cur.set(pos)
@@ -1562,6 +2357,32 @@ def streamdeck_tab(page, cfg, made):
         keys[cur.get()] = {"kind": kind_v.get(), "title": title_v.get().strip()}
         draw()
 
+    def assign(idx, pos):
+        """Put sounds (list indexes) on a key; several on one key make it a Random Action unless set otherwise."""
+        for i in idx:
+            sounds[i]["key"] = pos
+        if sum(s["key"] == pos for s in sounds) > 1 and keys.get(pos, {}).get("kind", "Single sound") == "Single sound":
+            keys[pos] = {"kind": "Random Action", "title": keys.get(pos, {}).get("title", "")}
+        pick_key(pos)
+        show([str(i) for i in idx])
+        status.config(text=f"{len(idx)} sound(s) mapped to key {pos}.")
+
+    def swap_keys(a, b):
+        for s in st["lay"].get(a, ("", "", []))[2]:  # pin auto-placed sounds before swapping
+            s["key"] = s["key"] or a
+        for s in st["lay"].get(b, ("", "", []))[2]:
+            s["key"] = s["key"] or b
+        for s in sounds:
+            s["key"] = b if s["key"] == a else a if s["key"] == b else s["key"]
+        ka, kb = keys.pop(a, None), keys.pop(b, None)
+        if ka:
+            keys[b] = ka
+        if kb:
+            keys[a] = kb
+        pick_key(b)
+        show()
+        status.config(text=f"Keys {a} and {b} swapped.")
+
     def add(paths, key=""):
         have = {str(s["path"]): s for s in sounds}
         added = 0
@@ -1573,45 +2394,59 @@ def streamdeck_tab(page, cfg, made):
                                ("mode", "fade", "fade_len", "volume", "output")}})  # new sounds take the editor's settings
                 added += 1
         show()
+        status.config(text=f"Added {added} sound(s)" + (f" to key {key}" if key else "") + ".")
         return added
 
     def folder_sounds(title):
         f = filedialog.askdirectory(title=title)
         return [q for q in media_files([f]) if q.suffix.lower() in AUDIO_EXT] if f else []
 
-    def folder_to_key():
-        """Every sound in a folder onto the selected key as one action (Random unless already Multi)."""
-        files = folder_sounds(f"Sounds for key {cur.get()}")
+    def folder_to_key(pos=None):
+        """Every sound in a folder onto a key as one action (Random unless already Multi)."""
+        pos = pos or cur.get()
+        files = folder_sounds(f"Sounds for key {pos}")
         if not files:
             return
-        add(files, cur.get())
+        pick_key(pos)
+        add(files, pos)
         if len(files) > 1 and kind_v.get() == "Single sound":
             kind_v.set("Random Action")
         if not title_v.get().strip():
             title_v.set(Path(files[0]).parent.name[:20])
-        status.config(text=f"Key {cur.get()}: {len(files)} sound(s) from {Path(files[0]).parent}")
+        status.config(text=f"Key {pos}: {len(files)} sound(s) from {Path(files[0]).parent}")
 
-    def files_to_key():
-        add(filedialog.askopenfilenames(title=f"Sounds for key {cur.get()}",
-                                        filetypes=[("Audio", audio_pat), ("All files", "*.*")]), cur.get())
+    def files_to_key(pos=None):
+        pos = pos or cur.get()
+        pick_key(pos)
+        files = filedialog.askopenfilenames(title=f"Sounds for key {pos}",
+                                            filetypes=[("Audio", audio_pat), ("All files", "*.*")])
+        if files:
+            add(files, pos)
+            if len(files) > 1 and kind_v.get() == "Single sound":
+                kind_v.set("Random Action")
 
-    def selected_to_key():
-        sel = picked()
-        if not sel:
-            return messagebox.showinfo("Assign", "Select sounds in the list first.")
-        for i in sel:
-            sounds[i]["key"] = cur.get()
-        if len([s for s in sounds if s["key"] == cur.get()]) > 1 and kind_v.get() == "Single sound":
-            kind_v.set("Random Action")
-        show()
-
-    def clear_key():
+    def clear_key(pos=None):
+        pos = pos or cur.get()
         for s in sounds:
-            if s["key"] == cur.get():
+            if s["key"] == pos:
                 s["key"] = ""
-        keys.pop(cur.get(), None)
-        pick_key(cur.get())
+        keys.pop(pos, None)
+        pick_key(pos)
         show()
+
+    def set_kind(pos, kind):
+        pick_key(pos)
+        kind_v.set(kind)
+
+    def key_menu(pos, e):
+        pick_key(pos)
+        sel = picked()
+        ui_menu(kgrid.frame, e, [("Add folder to this key...", lambda: folder_to_key(pos)),
+                                 ("Add files to this key...", lambda: files_to_key(pos)),
+                                 (f"Put the {len(sel)} selected sound(s) here", (lambda: assign(sel, pos)) if sel
+                                  else None), None,
+                                 *[(f"Make it: {kd}", lambda kd=kd: set_kind(pos, kd)) for kd in SD_KINDS], None,
+                                 ("Clear this key", lambda: clear_key(pos))])
 
     def picked():
         return [int(i) for i in tree.selection()]
@@ -1633,20 +2468,19 @@ def streamdeck_tab(page, cfg, made):
                     val = v[n].get()
                     sounds[i][n] = val.strip() if isinstance(val, str) else val
         show()
-        tree.selection_set([str(i) for i in sel])
+        status.config(text=f"Settings applied to {len(sel)} sound(s).")
 
     def move(step):
         sel = picked()
         if len(sel) == 1 and 0 <= sel[0] + step < len(sounds):
             i = sel[0]
             sounds[i], sounds[i + step] = sounds[i + step], sounds[i]
-            show()
-            tree.selection_set(str(i + step))
+            show([str(i + step)])
 
     def remove():
         for i in sorted(picked(), reverse=True):
             del sounds[i]
-        show()
+        show([])
 
     def unassign():
         for i in picked():
@@ -1658,9 +2492,86 @@ def streamdeck_tab(page, cfg, made):
         if sel:
             os.startfile(sounds[sel[0]]["path"])  # ponytail: plays in the default player, not through Stream Deck
 
+    # tree: in-place editing, menu, drag onto keys
+    def edit_cell(e):
+        item, col = tree.identify_row(e.y), tree.identify_column(e.x)
+        if not item or not col:
+            return
+        name, s = cols[int(col[1:]) - 1], sounds[int(item)]
+        if name == "file":
+            return preview()
+
+        def done(val):
+            if name == "key":
+                val = val.strip()
+                if val.lower() == "auto":
+                    val = ""
+                try:
+                    sd_key(val, *deck_size())
+                except ValueError as err:
+                    return messagebox.showerror("Key", str(err))
+                return assign([int(item)], val) if val else (s.update(key=""), show())
+            if name == "volume":
+                try:
+                    val = int(val)
+                    assert 0 <= val <= 100
+                except (ValueError, AssertionError):
+                    return messagebox.showerror("Volume", "Volume is a whole number from 0 to 100.")
+            s["title" if name == "title" else name] = val
+            show()
+        if name == "mode":
+            ui_cell_edit(tree, item, col, s["mode"], done, SD_MODES)
+        elif name == "fade":
+            ui_cell_edit(tree, item, col, s["fade"], done, SD_FADES)
+        elif name == "output":
+            ui_cell_edit(tree, item, col, s["output"] or SD_DEFAULT_OUT, done, sd_output_choices(), True)
+        else:
+            ui_cell_edit(tree, item, col, str(s[name] or ("auto" if name == "key" else "")), done)
+    tree.bind("<Double-Button-1>", edit_cell)
+
+    def tree_menu(e):
+        item = tree.identify_row(e.y)
+        if item and item not in tree.selection():
+            tree.selection_set(item)
+        sel = picked()
+        if not sel:
+            return
+        ui_menu(tree, e, [("Preview", preview), (f"Put on key {cur.get()}", lambda: assign(sel, cur.get())),
+                          ("Unassign (place automatically)", unassign), None,
+                          ("Move up", lambda: move(-1)), ("Move down", lambda: move(1)), None,
+                          (f"Remove {len(sel)} sound(s)   Del", remove)])
+    tree.bind("<Button-3>", tree_menu)
+    drag = {}
+
+    def tpress(e):
+        it = tree.identify_row(e.y)
+        drag.clear()
+        drag.update(x=e.x_root, y=e.y_root, item=it)
+        if it and it in tree.selection() and not e.state & 0x0005:
+            return "break"  # keep a multi-selection so it can be dragged as a group
+
+    def tmotion(e):
+        if drag.get("item") and abs(e.x_root - drag["x"]) + abs(e.y_root - drag["y"]) > 8:
+            drag["moved"] = True
+            tree.config(cursor="fleur")
+
+    def trelease(e):
+        tree.config(cursor="")
+        d = dict(drag)
+        drag.clear()
+        if d.get("moved"):
+            pos = kgrid.key_at(e.x_root, e.y_root)
+            if pos:
+                assign(picked(), one(pos))
+        elif d.get("item") and len(tree.selection()) > 1 and not e.state & 0x0005 and d["item"] in tree.selection():
+            tree.selection_set(d["item"])
+    tree.bind("<ButtonPress-1>", tpress)
+    tree.bind("<B1-Motion>", tmotion)
+    tree.bind("<ButtonRelease-1>", trelease)
+
     def on_device(*_):
-        _, _, c, r = devices[k["device"].get()]
-        k["cols"].set(c), k["rows"].set(r)
+        _, _, c, r_ = devices[k["device"].get()]
+        k["cols"].set(c), k["rows"].set(r_)
 
     def save():
         sc.update({n: x.get() for n, x in k.items()})
@@ -1706,26 +2617,36 @@ def streamdeck_tab(page, cfg, made):
         except OSError:
             status.config(text=f"Stream Deck app not found. Profile saved: {out} (double-click it once installed)")
 
-    for text, cmd in (("Add folder to this key...", folder_to_key), ("Add files to this key...", files_to_key),
-                      ("Selected sounds -> this key", selected_to_key), ("Clear this key", clear_key)):
-        tk.Button(kbtns, text=text, command=cmd).pack(side="left", padx=2, expand=True, fill="x")
-    for text, cmd in (("Add files...", lambda: add(filedialog.askopenfilenames(
-                          title="Select sounds", filetypes=[("Audio", audio_pat), ("All files", "*.*")]))),
-                      ("Add folder...", lambda: add(folder_sounds("Add every sound in folder"))),
-                      ("Add Channel Mirror outputs", lambda: add(made) if made else messagebox.showinfo(
-                          "No outputs yet", "Run the Channel Mirror tab first; the files it writes show up here.")),
-                      ("Preview", preview), ("Move up", lambda: move(-1)), ("Move down", lambda: move(1)),
-                      ("Unassign key (auto)", unassign), ("Remove selected", remove),
-                      ("Clear all", lambda: (sounds.clear(), keys.clear(), show()))):
-        tk.Button(side, text=text, command=cmd, width=24).pack(pady=2)
-    tk.Button(ed, text="Apply to selected", command=apply, width=16).pack(anchor="e", padx=6, pady=(0, 6))
-    tk.Button(bar, text="Send to Stream Deck", command=send, width=20,
-              font=("Segoe UI", 11, "bold")).pack(side="left")
+    for text, cmd, tip in (("Add files...", lambda: add(filedialog.askopenfilenames(
+                                title="Select sounds", filetypes=[("Audio", audio_pat), ("All files", "*.*")])),
+                            "Pick sound files"),
+                           ("Add folder...", lambda: add(folder_sounds("Add every sound in folder")),
+                            "Every sound file in a folder"),
+                           ("Add Channel Mirror outputs", lambda: add(made) if made else messagebox.showinfo(
+                               "No outputs yet", "Run the Channel Mirror tab first; the files it writes show up here."),
+                            "The files the Channel Mirror tab wrote this session")):
+        b = ttk.Button(adders, text=text, command=cmd)
+        b.pack(side="left", padx=(0, 6))
+        Tip(b, tip)
+    for text, cmd in (("Preview", preview), ("Up", lambda: move(-1)), ("Down", lambda: move(1)),
+                      ("Unassign", unassign), ("Remove", remove),
+                      ("Clear all", lambda: (sounds.clear(), keys.clear(), show([])))):
+        ttk.Button(tools, text=text, style="Tool.TButton", command=cmd).pack(side="left", padx=(0, 4))
+    for text, cmd in (("Add folder...", folder_to_key), ("Add files...", files_to_key),
+                      ("Selected sounds here", lambda: assign(picked(), cur.get()) if picked() else
+                       messagebox.showinfo("Assign", "Select sounds in the list first.")),
+                      ("Clear key", clear_key)):
+        ttk.Button(kbtns, text=text, style="Tool.TButton", command=cmd).pack(side="left", padx=(0, 4), expand=True,
+                                                                             fill="x")
+    apply_btn.config(command=apply)
+    ttk.Button(runbar, text="Send to Stream Deck", style="Accent.TButton", command=send).pack(side="left")
     direct = tk.BooleanVar(value=sc.get("direct", SD_EXE.exists()))
-    tk.Checkbutton(bar, text="Install directly (no import prompt; restarts Stream Deck)", variable=direct,
-                   state="normal" if SD_EXE.exists() else "disabled").pack(side="left", padx=8)
-    status.pack(side="left", fill="x", expand=True, padx=10)
+    ttk.Checkbutton(runbar, text="Install directly (no import prompt; restarts Stream Deck)", variable=direct,
+                    state="normal" if SD_EXE.exists() else "disabled").pack(side="left", padx=12)
+    status.pack(side="left", fill="x", expand=True, padx=6)
     tree.bind("<<TreeviewSelect>>", on_pick)
+    ui_keys(page, {"<Delete>": remove, "<Control-a>": lambda: tree.selection_set(tree.get_children()),
+                   "<space>": preview})
     k["device"].trace_add("write", on_device)
     for x in (k["cols"], k["rows"]):
         x.trace_add("write", lambda *_: draw())
@@ -1752,6 +2673,7 @@ def gui():
         pass
     items = []  # (path, info, rms)
     root = tk.Tk()
+    ui_theme(root)
     if (BUNDLE / "icon.ico").exists():
         root.iconbitmap(default=str(BUNDLE / "icon.ico"))
     if offer_install(root, cfg):  # started the installed copy instead
@@ -1760,36 +2682,59 @@ def gui():
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")) and not first_run_setup(root):
         root.destroy()
         return
-    root.title("Channel Mirror")
-    pad = {"padx": 10, "pady": 4}
+    root.title(f"Channel Mirror {VERSION}")
+    root.minsize(1100, 720)
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    root.geometry(cfg.get("geometry") or f"{min(sw - 80, max(1100, sw * 4 // 5))}x{min(sh - 100, max(720, sh * 6 // 7))}"
+                                         f"+{sw // 20}+{sh // 40}")
+
+    # header
+    head = ttk.Frame(root, style="Header.TFrame", padding=(16, 10))
+    head.pack(fill="x")
+    try:
+        img = tk.PhotoImage(file=str(BUNDLE / "icon.png"))
+        img = img.subsample(max(1, img.width() // 36))
+        ttk.Label(head, image=img, style="Header.TLabel").pack(side="left", padx=(0, 10))
+        head.img = img
+    except tk.TclError:
+        pass
+    ttk.Label(head, text="Channel Mirror", style="HeadTitle.TLabel").pack(side="left")
+    ttk.Label(head, text=f"  v{VERSION}  -  route audio channels, build and edit Stream Deck soundboards",
+              style="HeadSub.TLabel").pack(side="left", pady=(6, 0))
+    ttk.Separator(root).pack(fill="x")
+
     nb = ttk.Notebook(root)
-    nb.pack(fill="both", expand=True)
-    page, sd_page = tk.Frame(nb), tk.Frame(nb)
-    nb.add(page, text="  Channel Mirror  ")
-    nb.add(sd_page, text="  Stream Deck soundboard  ")
-    ed_page = tk.Frame(nb)
-    nb.add(ed_page, text="  Stream Deck editor  ")
+    nb.pack(fill="both", expand=True, pady=(6, 0))
+    page, sd_page, ed_page = ttk.Frame(nb), ttk.Frame(nb), ttk.Frame(nb)
+    nb.add(page, text="Channel Mirror")
+    nb.add(sd_page, text="Stream Deck soundboard")
+    nb.add(ed_page, text="Stream Deck editor")
     made = []  # files written this session, offered to the Stream Deck tab
     sd_save = streamdeck_tab(sd_page, cfg, made)
     sd_editor_tab(ed_page)
+    pad = {"padx": 10, "pady": 5}
 
     # 1. Input files
-    inp = tk.LabelFrame(page, text=" 1. Input files ")
+    inp = ttk.LabelFrame(page, text="1. Input files")
     inp.pack(fill="both", expand=True, **pad)
-    side = tk.Frame(inp)
-    side.pack(side="right", fill="y", padx=6, pady=4)
-    box = tk.Frame(inp)
-    box.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=4)
-    lst = tk.Listbox(box, font=("Consolas", 10), selectmode="extended", width=110, height=12)
-    ys = tk.Scrollbar(box, command=lst.yview)
-    xs = tk.Scrollbar(box, orient="horizontal", command=lst.xview)
+    side = ttk.Frame(inp)
+    side.pack(side="right", fill="y", padx=(10, 0))
+    box = ttk.Frame(inp)
+    box.pack(side="left", fill="both", expand=True)
+    fcols = ("file", "levels", "loudest", "outputs")
+    lst = ttk.Treeview(box, columns=fcols, show="headings", height=5)
+    for c, h, w in zip(fcols, ("File", "Channel levels", "Loudest", "Will write"), (220, 260, 90, 520)):
+        lst.heading(c, text=h)
+        lst.column(c, width=w, stretch=c in ("file", "outputs"))
+    ys = ttk.Scrollbar(box, command=lst.yview)
+    xs = ttk.Scrollbar(box, orient="horizontal", command=lst.xview)
     lst.config(yscrollcommand=ys.set, xscrollcommand=xs.set)
     ys.pack(side="right", fill="y")
     xs.pack(side="bottom", fill="x")
     lst.pack(fill="both", expand=True)
 
     # 2. Settings
-    sett = tk.LabelFrame(page, text=" 2. Settings ")
+    sett = ttk.LabelFrame(page, text="2. Settings")
     sett.pack(fill="x", **pad)
     src_on, tgt_on = cfg.get("sources", ["Auto (loudest)"]), cfg.get("targets", ["both"])
     src_vars = {s: tk.BooleanVar(value=s in src_on) for s in SOURCES}
@@ -1801,14 +2746,14 @@ def gui():
     split_var, parts_var = tk.BooleanVar(value=cfg.get("split", False)), tk.StringVar(value=cfg.get("parts", ""))
 
     # 3. Output folder
-    outf = tk.LabelFrame(page, text=f' 3. Output folder (blank = a "{OUT_SUBDIR}" folder beside the inputs) ')
+    outf = ttk.LabelFrame(page, text=f'3. Output folder  (blank = a "{OUT_SUBDIR}" folder beside the inputs)')
     outf.pack(fill="x", **pad)
     out_var = tk.StringVar(value=cfg.get("out_dir", ""))
-    tk.Entry(outf, textvariable=out_var).pack(side="left", fill="x", expand=True, padx=6, pady=6)
+    ttk.Entry(outf, textvariable=out_var).pack(side="left", fill="x", expand=True)
 
-    runbar = tk.Frame(page)
-    runbar.pack(fill="x", padx=10, pady=(4, 10))
-    status = tk.Label(runbar, anchor="w", text="Add audio files or a folder to begin.")
+    runbar = ttk.Frame(page, padding=(10, 4, 10, 10))
+    runbar.pack(fill="x")
+    status = ttk.Label(runbar, style="Status.TLabel", anchor="w", text="Add audio files or a folder to begin.")
 
     def chosen():
         return [s for s, v in src_vars.items() if v.get()], [t for t, v in tgt_vars.items() if v.get()]
@@ -1825,17 +2770,18 @@ def gui():
             pass  # settings are a convenience; never block the user over them
 
     def refresh(*_):
-        lst.delete(0, "end")
+        lst.delete(*lst.get_children())
         sources, targets = chosen()
         total = 0
-        for src, info, rms in items:
+        for i, (src, info, rms) in enumerate(items):
             names = labels(len(rms))
             levels = "  ".join(f"{nm} {v:6.1f} dB" for nm, v in zip(names, db(rms)))
             jobs = plan_jobs(src, rms, sources, targets, out_ext(src, info, mode_var.get()))
             total += len(jobs)
             part = "_partNN" if split_var.get() else ""  # part count is only known once Run finds the silences
             outs = ", ".join(f"{Path(j[2]).stem}{part}{Path(j[2]).suffix}" for j in jobs) or "(nothing selected)"
-            lst.insert("end", f"{src.name}  |  {levels}  |  loudest {names[int(np.argmax(rms))]}  |  {len(jobs)} out: {outs}")
+            lst.insert("", "end", iid=str(i), values=(src.name, levels, names[int(np.argmax(rms))],
+                                                      f"{len(jobs)}: {outs}"))
         each = ", each split into parts at silences" if split_var.get() else ""
         status.config(text=f"{len(items)} file(s) loaded, {total} output file(s) will be written{each}.")
 
@@ -1875,7 +2821,7 @@ def gui():
             load(media_files([folder]))
 
     def remove_selected():
-        for i in reversed(lst.curselection()):
+        for i in sorted(map(int, lst.selection()), reverse=True):
             del items[i]
         refresh()
 
@@ -1887,6 +2833,13 @@ def gui():
         folder = filedialog.askdirectory(title="Save output files to...")
         if folder:
             out_var.set(folder)
+
+    def open_out():
+        folder = Path(out_var.get().strip()) if out_var.get().strip() else (out_folder(items[0][0]) if items else None)
+        if folder and folder.is_dir():
+            os.startfile(folder)
+        else:
+            status.config(text="The output folder doesn't exist yet - it's created on the first Run.")
 
     def run():
         sources, targets = chosen()
@@ -1965,57 +2918,75 @@ def gui():
         else:
             messagebox.showinfo("Done", msg)
 
-    for text, cmd in (("Add files...", add_files), ("Add folder...", add_folder),
-                      ("Remove selected", remove_selected), ("Clear all", clear)):
-        tk.Button(side, text=text, command=cmd, width=16).pack(pady=2)
-    tk.Button(outf, text="Browse...", command=browse_out, width=12).pack(side="left", padx=(0, 6))
-    tk.Button(runbar, text="Run", command=run, width=14, font=("Segoe UI", 11, "bold")).pack(side="left")
-    status.pack(side="left", fill="x", expand=True, padx=10)
+    for text, cmd, tip in (("Add files...", add_files, "Audio or video files"),
+                           ("Add folder...", add_folder, "Every audio/video file in a folder"),
+                           ("Remove selected", remove_selected, "Del"), ("Clear all", clear, "")):
+        b = ttk.Button(side, text=text, command=cmd, width=16)
+        b.pack(pady=2, fill="x")
+        if tip:
+            Tip(b, tip)
+    ttk.Button(outf, text="Browse...", command=browse_out).pack(side="left", padx=(8, 0))
+    ttk.Button(outf, text="Open", command=open_out).pack(side="left", padx=(6, 0))
+    ttk.Button(runbar, text="Run", command=run, style="Accent.TButton", width=12).pack(side="left")
+    status.pack(side="left", fill="x", expand=True, padx=12)
+
+    def file_menu(e):
+        it = lst.identify_row(e.y)
+        if it and it not in lst.selection():
+            lst.selection_set(it)
+        if lst.selection():
+            src = items[int(lst.selection()[0])][0]
+            ui_menu(lst, e, [("Play file", lambda: os.startfile(src)),
+                             ("Open file's folder", lambda: os.startfile(src.parent)), None,
+                             ("Remove   Del", remove_selected)])
+    lst.bind("<Button-3>", file_menu)
+    ui_keys(page, {"<Delete>": remove_selected, "<Control-a>": lambda: lst.selection_set(lst.get_children())})
 
     def group(title, vars_, text_for):
-        row = tk.Frame(sett)
-        row.pack(fill="x", padx=6, pady=3)
-        tk.Label(row, text=title, width=16, anchor="w").pack(side="left")
+        row = ttk.Frame(sett)
+        row.pack(fill="x", pady=3)
+        ttk.Label(row, text=title, width=16).pack(side="left")
         all_var = tk.BooleanVar(value=all(v.get() for v in vars_.values()))
 
         def toggle_all():
             on = all_var.get()  # read once: setting each box re-syncs all_var mid-loop
             for v in vars_.values():
                 v.set(on)
-        tk.Checkbutton(row, text="All", variable=all_var, command=toggle_all).pack(side="left")
+        ttk.Checkbutton(row, text="All", variable=all_var, command=toggle_all).pack(side="left")
         for key, v in vars_.items():
-            tk.Checkbutton(row, text=text_for(key), variable=v).pack(side="left", padx=4)
+            ttk.Checkbutton(row, text=text_for(key), variable=v).pack(side="left", padx=8)
             v.trace_add("write", lambda *_: (all_var.set(all(x.get() for x in vars_.values())), refresh()))
 
-    group("Source channel:", src_vars, lambda s: s)
-    group("Output to:", tgt_vars, str.capitalize)
-    row = tk.Frame(sett)
-    row.pack(fill="x", padx=6, pady=3)
-    tk.Label(row, text="Output type:", width=16, anchor="w").pack(side="left")
+    group("Source channel", src_vars, lambda s: s)
+    group("Output to", tgt_vars, str.capitalize)
+    row = ttk.Frame(sett)
+    row.pack(fill="x", pady=3)
+    ttk.Label(row, text="Output type", width=16).pack(side="left")
     shown = tk.StringVar(value=label_of[mode_var.get()])
-    tk.OptionMenu(row, shown, *OUTPUT_TYPES, command=lambda lbl: mode_var.set(OUTPUT_TYPES[lbl])).pack(side="left", padx=4)
+    ttk.Combobox(row, textvariable=shown, values=tuple(OUTPUT_TYPES), state="readonly", width=34).pack(side="left")
+    shown.trace_add("write", lambda *_: mode_var.set(OUTPUT_TYPES[shown.get()]))
     mode_var.trace_add("write", refresh)
 
-    row = tk.Frame(sett)
-    row.pack(fill="x", padx=6, pady=3)
-    tk.Label(row, text="Length:", width=16, anchor="w").pack(side="left")
-    tk.Entry(row, textvariable=len_var, width=9).pack(side="left", padx=4)
-    len_hint = tk.Label(row, width=34, anchor="w")
-    len_hint.pack(side="left")
-    loop_cb = tk.Checkbutton(row, text="Loop to fill length", variable=loop_var)
+    row = ttk.Frame(sett)
+    row.pack(fill="x", pady=3)
+    ttk.Label(row, text="Length", width=16).pack(side="left")
+    ttk.Entry(row, textvariable=len_var, width=9).pack(side="left")
+    len_hint = ttk.Label(row, width=40, style="Hint.TLabel")
+    len_hint.pack(side="left", padx=8)
+    loop_cb = ttk.Checkbutton(row, text="Loop to fill length", variable=loop_var)
     loop_cb.pack(side="left", padx=(12, 4))
-    quiet_cb = tk.Checkbutton(row, variable=quiet_var)
-    quiet_cb.pack(side="left", padx=4)
+    quiet_cb = ttk.Checkbutton(row, variable=quiet_var)
+    quiet_cb.pack(side="left", padx=8)
 
-    row = tk.Frame(sett)
-    row.pack(fill="x", padx=6, pady=3)
-    tk.Label(row, text="Split:", width=16, anchor="w").pack(side="left")
-    tk.Checkbutton(row, text="Split each file into parts", variable=split_var).pack(side="left")
-    parts_lbl = tk.Label(row, text="Parts:")
-    parts_lbl.pack(side="left", padx=(12, 0))
-    parts_entry = tk.Entry(row, textvariable=parts_var, width=5)
-    parts_entry.pack(side="left", padx=4)
-    split_hint = tk.Label(row, anchor="w")
+    row = ttk.Frame(sett)
+    row.pack(fill="x", pady=3)
+    ttk.Label(row, text="Split", width=16).pack(side="left")
+    ttk.Checkbutton(row, text="Split each file into parts", variable=split_var).pack(side="left")
+    parts_lbl = ttk.Label(row, text="Parts")
+    parts_lbl.pack(side="left", padx=(16, 0))
+    parts_entry = ttk.Entry(row, textvariable=parts_var, width=5)
+    parts_entry.pack(side="left", padx=6)
+    split_hint = ttk.Label(row, style="Hint.TLabel")
     split_hint.pack(side="left")
     user_quiet = [quiet_var.get()]  # the user's own quiet choice, put back when Split is turned off
 
@@ -2040,8 +3011,15 @@ def gui():
     split_var.trace_add("write", on_split)
     on_split()
 
+    try:
+        nb.select(int(cfg.get("tab", 0)))
+    except (tk.TclError, ValueError):
+        pass
+
     def on_close():
         sd_save()
+        cfg["geometry"] = root.geometry() if root.state() == "normal" else cfg.get("geometry", "")
+        cfg["tab"] = nb.index(nb.select())
         save_settings()
         root.destroy()
     root.protocol("WM_DELETE_WINDOW", on_close)

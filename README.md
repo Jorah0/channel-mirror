@@ -106,3 +106,13 @@ Edits the buttons already in your local Stream Deck app.
    - **Arrange keys**: move/swap a key, combine keys into one Random or Multi Action, split them back into single keys, add a *Stop all audio* key, delete keys.
    - **Fix missing sound files**: points broken sound keys (e.g. profiles copied from another computer) at a file with the same name in a folder you choose.
 4. **Save to Stream Deck**: closes Stream Deck (it rewrites its profiles when it exits), backs up the touched profiles to `%LOCALAPPDATA%\ChannelMirror\Stream Deck backups\profiles-<time>.zip`, writes the changes and reopens Stream Deck. To undo a save, unzip the backup into `%APPDATA%\Elgato\StreamDeck\ProfilesV3`. *Revert unsaved* throws away changes you haven't saved.
+
+## Working in the app
+
+- **Keys grid** (both Stream Deck tabs): click to select; Ctrl+click to add more keys; drag one key onto another to move or swap them; double-click to edit; right-click for a menu. Hover over a key to see what's on it.
+- **Edit key window** (Stream Deck editor tab; double-click a key or right-click > Edit key): name, show/hide, font size, position, colour, and every sound on the key (file, action, fade, volume, output). You can also add sounds (a single sound becomes a Random or Multi Action), remove them or reorder them.
+- **Lists**: double-click a cell to change it in place (name, key, action, fade, volume, output). In the soundboard tab, drag sounds from the list onto a key to map them.
+- **Shortcuts**:
+  - Editor tab: Ctrl+Z / Ctrl+Y undo/redo, Ctrl+S save, Ctrl+C / Ctrl+V copy/paste a key (works across pages and profiles), Del delete, Ctrl+A select all, Esc select none.
+  - Soundboard tab: Del removes sounds, Space previews the selected sound.
+- The window remembers its size and the last tab you used.
