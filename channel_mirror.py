@@ -630,6 +630,28 @@ def sd_uid():
     return str(uuid.uuid4())
 
 
+def sd_play(path, title="", mode=SD_MODES[0], fade=SD_FADES[0], fade_len=1, volume=100, output="", rid=None):
+    """A Play Audio action. rid = bundled-audio id (export files only; installed profiles play from path)."""
+    return {"ActionID": sd_uid(), "LinkedTitle": True, "Name": "Play Audio", "Plugin": dict(SD_SOUNDBOARD),
+            "Resources": {"file": rid} if rid else None,
+            "Settings": {"actionType": SD_MODES.index(mode), "fadeLen": int(fade_len), "fadeType": SD_FADES.index(fade),
+                         "outputType": sd_out(output), "path": str(path), "volume": int(volume)},
+            "State": 0, "States": [{"Title": title}], "UUID": SD_PLAY}
+
+
+def sd_renew(action):
+    """Give an action (and everything nested in it) fresh ActionIDs, so a pasted copy is its own key."""
+    if isinstance(action, dict):
+        if "ActionID" in action:
+            action["ActionID"] = sd_uid()
+        for v in action.values():
+            sd_renew(v)
+    elif isinstance(action, list):
+        for v in action:
+            sd_renew(v)
+    return action
+
+
 def sd_wrap(kind, title, plays):
     """A Multi Action / Random Action key holding the given actions."""
     # ponytail: Random Action assumed to nest like Multi Action (no Random key in any local profile to copy)
@@ -646,13 +668,8 @@ def sd_profile_files(name, device, sounds, keys):
 
     def play(s):
         path = str(Path(s["path"]).resolve())
-        rid = res.setdefault(path, new())
-        return {"ActionID": new(), "LinkedTitle": True, "Name": "Play Audio", "Plugin": dict(SD_SOUNDBOARD),
-                "Resources": {"file": rid},
-                "Settings": {"actionType": SD_MODES.index(s["mode"]), "fadeLen": int(s["fade_len"]),
-                             "fadeType": SD_FADES.index(s["fade"]), "outputType": sd_out(s.get("output")),
-                             "path": path, "volume": int(s["volume"])},
-                "State": 0, "States": [{"Title": s["title"]}], "UUID": SD_PLAY}
+        return sd_play(path, s["title"], s["mode"], s["fade"], s["fade_len"], s["volume"], s.get("output"),
+                       res.setdefault(path, new()))
 
     actions = {}
     for (c, r), (kind, title, group) in sd_layout(sounds, keys, cols, rows).items():
