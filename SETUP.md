@@ -253,29 +253,38 @@ Notes:
 
 ## 6. Installing and distributing the executable
 
-There is no installer. To "install":
+`ChannelMirror.exe` is its own installer. It's one file with Python, numpy and the app inside, so the other PC
+needs nothing else.
 
-1. Copy `dist\ChannelMirror.exe` anywhere (e.g. `C:\Tools\ChannelMirror\`, the Desktop, a USB stick).
-2. Double-click it.
-3. On the first start on a PC without ffmpeg, click **Install ffmpeg** on the setup screen (see
-   [2.3](#23-ffmpeg-and-ffprobe)). After that it opens straight to the main window.
+**On another computer:**
 
-Prefer no download? Install ffmpeg on PATH, or put `ffmpeg.exe` + `ffprobe.exe` in the same folder as the exe,
-and the setup screen never appears.
+1. Download `ChannelMirror.exe` from the repo's **Releases** page (or copy `dist\ChannelMirror.exe` over).
+2. Double-click it. Windows may show "Windows protected your PC" because the exe isn't code-signed. Click
+   **More info > Run anyway**.
+3. Click **Install**. It goes to `%LOCALAPPDATA%\Programs\ChannelMirror` (per user, no admin rights), with a
+   Start menu entry, an optional desktop shortcut, an optional right-click **Send to > Channel Mirror**, and
+   an entry in **Settings > Apps > Installed apps**. The installed copy then opens.
+4. On a PC without ffmpeg, click **Install ffmpeg** on the next screen (see [2.3](#23-ffmpeg-and-ffprobe)).
+   This happens only once.
 
-A fully portable folder for another PC looks like this:
+- **Update:** run a newer `ChannelMirror.exe` the same way and click **Update**. Settings are kept.
+- **Uninstall:** go to **Settings > Apps > Installed apps > Channel Mirror > Uninstall**. It asks whether to also
+  delete your settings and the downloaded ffmpeg.
+- **Just run it (portable):** click **Just run it** on the install screen (it won't ask again on that PC), or
+  start it with `--portable`. A portable folder can carry its own ffmpeg:
 
 ```text
-ChannelMirror\
-  ChannelMirror.exe
+ChannelMirror  ChannelMirror.exe
   ffmpeg.exe
   ffprobe.exe
 ```
 
-To uninstall: delete the exe, any shortcuts you made, and optionally `%USERPROFILE%\.channel_mirror.json` and
-`%LOCALAPPDATA%\ChannelMirror` (the ffmpeg the setup screen downloaded).
+**Scripted / silent:**
 
-Prebuilt exes are on the GitHub repo's **Releases** page.
+```powershell
+.\ChannelMirror.exe --install                  # install with every shortcut, no questions
+& "$env:LOCALAPPDATA\Programs\ChannelMirror\ChannelMirror.exe" --uninstall --quiet
+```
 
 ---
 

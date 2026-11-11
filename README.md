@@ -17,13 +17,15 @@ Full setup, build, release and troubleshooting guide: [SETUP.md](SETUP.md).
 .\build.ps1        # -> dist\ChannelMirror.exe (single file, no Python needed to run it)
 ```
 
-Double-click `dist\ChannelMirror.exe`, or copy it anywhere (Desktop, another PC). It needs ffmpeg: on first
+To put it on another computer, copy or download `ChannelMirror.exe` there and double-click it. Click **Install** and it installs itself for that user (Start menu, optional desktop and Send To shortcuts, uninstall from Settings > Apps); or click **Just run it** to use it portably. Running a newer exe the same way updates it. Details: [SETUP.md section 6](SETUP.md#6-installing-and-distributing-the-executable).
+
+It needs ffmpeg: on first
 start without it, a setup screen offers **Install ffmpeg** (downloads the official Windows build, ~110 MB,
 checksum-verified, into `%LOCALAPPDATA%\ChannelMirror\ffmpeg`; only once). Or install ffmpeg on PATH yourself,
 or put `ffmpeg.exe` + `ffprobe.exe` in the same folder as the exe. Prebuilt exe: see the repo's **Releases** page.
 
 **Drag and drop**: drop files or folders onto `ChannelMirror.exe` (or its shortcut) to open with them loaded.
-To add it to right-click **Send to** (run once, from this folder in PowerShell):
+The installer adds right-click **Send to** for you. To add it by hand for an uninstalled copy (run once, from this folder in PowerShell):
 
 ```powershell
 $s = (New-Object -ComObject WScript.Shell).CreateShortcut("$env:APPDATA\Microsoft\Windows\SendTo\Channel Mirror.lnk")
@@ -79,3 +81,28 @@ $s.TargetPath = (Get-Command pythonw).Source; $s.Arguments = "`"$PWD\channel_mir
 
 Output names: `song_left.mp3`, `song_right.mp3`, `song_both.mp3`. When several sources are ticked
 the source is added: `song_fromR_left.mp3`. The source format and bitrate are kept where possible.
+
+## Stream Deck soundboard tab
+
+Turns sounds (picked files, a folder, or what the Channel Mirror tab just wrote) into Stream Deck **Play Audio** keys.
+
+1. **Device**: decks come from your own Stream Deck profiles. A deck that is plugged in right now is listed first as `[connected]`. Columns/Rows set the key grid.
+2. **Map keys**: click a key on the grid. Then use *Add folder to this key* (every sound in the folder goes on that one key), *Add files to this key*, or *Selected sounds -> this key*. Set the key's **Action** (Single sound / Multi Action = all play at once / Random Action = one random sound per press) and its **Key name**. Sounds with no key fill the free keys in order.
+3. **Sound settings** (per sound): name, Play / Stop, Play / Overlap, Play / Restart or Loop / Stop, fade (in/out/both, 1-5 s), volume, output device.
+4. **Send to Stream Deck**: with *Install directly* ticked (the default when Stream Deck is installed), the profile goes straight into Stream Deck. Stream Deck is closed and reopened, and there's no import prompt. Otherwise it writes `%LOCALAPPDATA%\ChannelMirror\Stream Deck profiles\<name>.streamDeckProfile` (audio bundled inside) and opens it. Stream Deck then asks you to import it as a new profile.
+
+## Stream Deck editor tab
+
+Edits the buttons already in your local Stream Deck app.
+
+1. Pick a **profile** (decks that are plugged in are listed first) and a **page**. Pages behind folder keys show as `Folder: <name>`.
+2. Click keys to select them, or use *Select sound keys* / *Select missing* / *Select all*. Colours: green = sound key, red = its sound file is missing, grey = another kind of action.
+3. Choose **what you want to do**, set the options, press **Apply** (you can apply several changes in a row):
+   - **Set them up for a purpose**: one-click presets. Reaction/spammable, stinger/one-shot, toggle clip, background music loop, ambience bed, intro/outro music, voice line.
+   - **Playback and fade**: Play / Stop, Play / Overlap, Play / Restart or Loop / Stop, fade type and fade length.
+   - **Volume**: set it, change it by +/-, or **Match loudness** (measures every file and turns the louder ones down to match the quietest).
+   - **Output device**: pick a Multi or Random Action from the *Multi / Random* list (every page and folder of the profile; ones with sounds first) and set the output for every sound inside it at once. The list shows devices Stream Deck has saved itself first (exact), then this PC's playback devices.
+   - **Key names and look**: name from the file name, folder name or a number; clear it; add text before/after; find and replace; show/hide the name; font size, position and colour.
+   - **Arrange keys**: move/swap a key, combine keys into one Random or Multi Action, split them back into single keys, add a *Stop all audio* key, delete keys.
+   - **Fix missing sound files**: points broken sound keys (e.g. profiles copied from another computer) at a file with the same name in a folder you choose.
+4. **Save to Stream Deck**: closes Stream Deck (it rewrites its profiles when it exits), backs up the touched profiles to `%LOCALAPPDATA%\ChannelMirror\Stream Deck backups\profiles-<time>.zip`, writes the changes and reopens Stream Deck. To undo a save, unzip the backup into `%APPDATA%\Elgato\StreamDeck\ProfilesV3`. *Revert unsaved* throws away changes you haven't saved.
