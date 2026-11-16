@@ -544,14 +544,23 @@ SD_GOALS = {
 }
 
 
+_plugged: dict = {}
+
+
 def sd_connected():
-    """USB instance ids of plugged-in devices (upper case), e.g. USB\\VID_0FD9&PID_0084\\A00WA4121LT9RJ."""
+    """USB instance ids of plugged-in devices (upper case), e.g. USB\\VID_0FD9&PID_0084\\A00WA4121LT9RJ.
+    Asking Windows takes ~2 s, so the answer is reused for a minute."""
+    import time
+    if _plugged and time.time() - _plugged["at"] < 60:
+        return _plugged["ids"]
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command", "(Get-PnpDevice -PresentOnly).InstanceId"],
                            capture_output=True, text=True, timeout=20, creationflags=NO_WINDOW)
-        return set(r.stdout.upper().split())
+        ids = set(r.stdout.upper().split())
     except (OSError, subprocess.SubprocessError):
-        return set()
+        ids = set()
+    _plugged.update(ids=ids, at=time.time())
+    return ids
 
 
 def sd_devices(sd_dir=SD_DIR, plugged=None):
@@ -802,16 +811,135 @@ def sd_set_sound(sounds, mode=None, fade=None, fade_len=None, volume=None, step=
             st["outputType"] = sd_out(output)
 
 
-def sd_match_loudness(sounds, level_db):
-    """Even out loudness: louder files get turned down so every sound plays as loud as the quietest one does now.
-    level_db: {path: loudest channel RMS in dB}; sounds without a level are left alone."""
+# OBS mix targets (RMS dBFS): a mic peaking around -10 in OBS's meter averages about -16; effects sit a bit under the
+# voice, music beds well under it. ponytail: RMS stands in for LUFS; close enough for a soundboard
+# Target per kind of sound. These are the defaults; the user's own OBS levels (settings "obs_levels") replace them.
+SD_OBS_DEFAULT = {"voice": -16.0, "effect": -20.0, "music / ambience": -30.0}
+SD_LEVELS = dict(SD_OBS_DEFAULT)
+SD_AUTO = "Auto: detect each sound (voice / effect / music)"
+SD_TUNE = {SD_AUTO: None, "Everything at my voice level": "voice", "Everything at my effects level": "effect",
+           "Everything at my music / ambience level": "music / ambience"}  # Tune choice -> kind (None = detect)
+SD_TOL = 2.0  # dB: a sound already playing this close to its target is left as it is
+
+
+def sd_set_levels(levels):
+    """Use the user's OBS levels ({kind: dB}); anything missing or out of range (-60..0) keeps its default."""
+    for kind, default in SD_OBS_DEFAULT.items():
+        try:
+            v = float((levels or {}).get(kind, default))
+        except (TypeError, ValueError):
+            v = default
+        SD_LEVELS[kind] = v if -60 <= v <= 0 else default
+    return dict(SD_LEVELS)
+_SD_HEARD = {}
+
+
+def sd_voiced(path, ch=0, sr=16000, fr=640):
+    """Does it sound like a voice? Speech is voiced (a pitch, 70-400 Hz) for much of the time and that pitch moves.
+    ponytail: two thresholds fitted on a labelled soundboard library; on clips it wasn't fitted on it splits voice
+    from effect 70-80% right (misses: growls/grunts heard as effects, ringing hits/howls heard as voice). A misread
+    costs 4 dB, which Check levels shows and a fixed preset overrides. Upgrade path: a trained classifier."""
+    proc = subprocess.run(["ffmpeg", "-v", "error", "-t", "30", "-i", str(path), "-map", "0:a:0", "-af",
+                           f"pan=mono|c0=c{ch}", "-ar", str(sr), "-f", "f32le", "-acodec", "pcm_f32le", "-"],
+                          capture_output=True, creationflags=NO_WINDOW)
+    x = np.frombuffer(proc.stdout, "<f4").astype(np.float64)
+    k = len(x) // fr
+    if k < 5:
+        return False
+    frames = x[:k * fr].reshape(k, fr)
+    e = 10 * np.log10(np.maximum((frames ** 2).mean(1), 1e-12))
+    if not (e > -50).any():
+        return False
+    loud = e > 10 * np.log10(np.mean(10 ** (e[e > -50] / 10))) - 20
+    lo, hi, win, f0 = sr // 400, sr // 70, np.hanning(fr), []
+    for i in np.flatnonzero(loud):
+        ac = np.fft.irfft(np.abs(np.fft.rfft((frames[i] - frames[i].mean()) * win, 2 * fr)) ** 2)[:fr]
+        if ac[0] > 0:
+            lag = lo + int(np.argmax(ac[lo:hi] / ac[0]))
+            if ac[lag] / ac[0] > 0.45:
+                f0.append(sr / lag)
+    if len(f0) < 4 or len(f0) < 0.3 * loud.sum():
+        return False
+    return float(np.std(12 * np.log2(np.array(f0) / np.median(f0)))) >= 1.5
+
+
+def sd_listen(path):
+    """Listen to a sound file once (cached per file version): {"level": its loudness in dB while it sounds, on its
+    loudest channel (the auto source) with silence and quiet tails left out, or None if silent; "secs"; "kind":
+    "voice" / "effect" / "music / ambience" (30 s or longer)}."""
+    p = Path(path)
+    key = (str(p), p.stat().st_mtime_ns)
+    if key in _SD_HEARD:
+        return _SD_HEARD[key]
+    info = probe(p)
+    n, sr = int(info["channels"]), int(info["sample_rate"])
+    blk = max(sr // 50, 1)  # 20 ms
+    proc = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(p), "-map", "0:a:0", "-f", "f32le", "-acodec",
+                             "pcm_f32le", "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
+    ms = []
+    while chunk := proc.stdout.read(blk * n * 4 * 250):
+        a = np.frombuffer(chunk, "<f4").reshape(-1, n)
+        k = len(a) // blk
+        if k:
+            ms.append((a[:k * blk].astype(np.float64).reshape(k, blk, n) ** 2).mean(1))
+    if proc.wait():
+        raise RuntimeError(f"ffmpeg could not decode {p.name}")
+    ms = np.concatenate(ms) if ms else np.zeros((0, n))
+    ch = int(np.argmax(ms.sum(0))) if len(ms) else 0
+    e = ms[:, ch]
+    edb = 10 * np.log10(np.maximum(e, 1e-12))
+    act = edb > -50
+    level = None
+    if act.sum() >= 5:
+        act &= edb > 10 * np.log10(e[act].mean()) - 20  # gate out tails 20 dB under the body of the sound
+        level = float(10 * np.log10(e[act].mean()))
+    secs = len(e) * blk / sr
+    kind = "music / ambience" if secs >= 30 else "voice" if level is not None and sd_voiced(p, ch) else "effect"
+    _SD_HEARD[key] = {"level": level, "secs": secs, "kind": kind}
+    return _SD_HEARD[key]
+
+
+def sd_level_rows(sounds, heard, preset=SD_AUTO, tol=SD_TOL):
+    """What tuning would do, per sound: {s, kind, level (file dB), now (dB at its volume), target, new (volume or
+    None = leave), verdict}. preset: a SD_TUNE choice (SD_AUTO = target by detected kind). heard: {path: sd_listen}."""
     import math
-    # ponytail: treats Stream Deck's volume as a linear gain; good enough to even a soundboard out by ear
+    rows = []
+    for s in sounds:
+        se = s.get("Settings", {})
+        h = heard.get(se.get("path", ""))
+        vol = int(se.get("volume", 100))
+        r = {"s": s, "kind": h["kind"] if h else "", "level": h and h["level"], "now": None, "target": None,
+             "new": None, "verdict": "file missing" if not h else "silent"}
+        rows.append(r)
+        if not h or h["level"] is None:
+            continue
+        t = SD_LEVELS[SD_TUNE.get(preset) or h["kind"]]
+        now = h["level"] + 20 * math.log10(max(vol, 1) / 100)
+        new = max(1, min(100, round(100 * 10 ** ((t - h["level"]) / 20))))
+        r.update(now=now, target=t)
+        if abs(now - t) <= tol:
+            r["verdict"] = "in range"
+        elif new == vol:
+            r["verdict"] = f"too quiet even at full volume ({t - now:.0f} dB under)"
+        else:
+            r["new"] = new
+            r["verdict"] = (f"too {'loud' if now > t else 'quiet'}: volume {vol} -> {new}"
+                            + (f" (still {t - h['level']:.0f} dB under)" if h["level"] < t - tol else ""))
+    return rows
+
+
+def sd_match_loudness(sounds, level_db, target=None):
+    """Even out loudness: louder files get turned down so every sound plays as loud as the quietest one does now,
+    or, with target (dB RMS, e.g. SD_LEVELS["effect"]), as loud as that. Volume tops out at 100, so files quieter than
+    target play at full. level_db: {path: loudest channel RMS in dB}; sounds without a level are left alone."""
+    import math
+    # Stream Deck's volume is a linear gain: measured on Stream Deck 7.4, volume 50 / 25 / 32 played the same file
+    # 6.02 / 12.04 / 9.90 dB quieter than volume 100, exactly 20*log10(volume/100)
     now = {id(s): level_db[s["Settings"]["path"]] + 20 * math.log10(max(int(s["Settings"].get("volume", 100)), 1) / 100)
            for s in sounds if s.get("Settings", {}).get("path") in level_db}
     if not now:
         return 0
-    target = min(now.values())
+    target = min(now.values()) if target is None else target
     for s in sounds:
         if id(s) in now:
             s["Settings"]["volume"] = max(1, min(100, round(100 * 10 ** ((target - level_db[s["Settings"]["path"]]) / 20))))
@@ -902,9 +1030,20 @@ SD_DEFAULT_OUT = "(Stream Deck default output)"
 
 
 def sd_out(value):
-    """Dropdown text -> the outputType Stream Deck stores ("" = its default device)."""
+    """Dropdown text -> the outputType Stream Deck stores: "" = its default device; a device name -> that
+    device's Windows endpoint id, which is what Stream Deck saves and matches on (checked by picking a device in
+    Stream Deck's own Output menu: it saved '{0.0.0.00000000}.{70df09e5-...}', not the name). Ids pass through."""
     value = (value or "").strip()
-    return "" if value == SD_DEFAULT_OUT else value
+    if value == SD_DEFAULT_OUT:
+        return ""
+    return value if value.startswith("{") else sd_win_outputs().get(value, value)
+
+
+def sd_out_name(value):
+    """A saved outputType -> what to show: the device's name, or the raw id when that device isn't connected."""
+    if not value:
+        return "default"
+    return next((n for n, i in sd_win_outputs().items() if i == value.lower()), value)
 
 
 def sd_outputs(sd_dir=SD_DIR):
@@ -921,22 +1060,32 @@ def sd_outputs(sd_dir=SD_DIR):
     return [v for v, _ in seen.most_common()]
 
 
-_win_outputs: list = []
+_win_outputs: dict = {}  # playback device name -> Windows endpoint id
 
 
-def sd_output_choices():
-    """Dropdown list: default, then values Stream Deck saved itself, then this PC's playback devices."""
+def sd_win_outputs():
+    """This PC's playback devices: {name as Stream Deck lists it: endpoint id as Stream Deck saves it}."""
     if not _win_outputs:  # ponytail: asked once per run; restart the app after plugging in new speakers
         try:
             r = subprocess.run(["powershell", "-NoProfile", "-Command",
                                 "Get-PnpDevice -Class AudioEndpoint -PresentOnly | Where-Object InstanceId -like "
-                                "'SWD\\MMDEVAPI\\{0.0.0.*' | ForEach-Object FriendlyName"],  # {0.0.0 = playback
-                               capture_output=True, text=True, timeout=20, creationflags=NO_WINDOW)
-            _win_outputs.extend(sorted({ln.strip() for ln in r.stdout.splitlines() if ln.strip()}))
+                                "'SWD\\MMDEVAPI\\{0.0.0.*' | ForEach-Object { $_.InstanceId + '|' + $_.FriendlyName }"],
+                               capture_output=True, text=True, timeout=20, creationflags=NO_WINDOW)  # {0.0.0 = playback
+            for line in r.stdout.splitlines():
+                iid, _, name = line.strip().partition("|")
+                if name and "\\" in iid:  # SWD\MMDEVAPI\{0.0.0.00000000}.{GUID} -> {0.0.0.00000000}.{guid}
+                    _win_outputs[name.strip()] = iid.rsplit("\\", 1)[1].lower()
         except (OSError, subprocess.SubprocessError):
             pass
-    known = sd_outputs()
-    return [SD_DEFAULT_OUT] + known + [w for w in _win_outputs if w not in known]
+    return _win_outputs
+
+
+def sd_output_choices():
+    """Dropdown list: default, this PC's playback devices by name, then any other device saved in a profile
+    (e.g. one not plugged in right now, shown by its id so it can still be picked)."""
+    ids = set(sd_win_outputs().values())
+    return ([SD_DEFAULT_OUT] + sorted(sd_win_outputs()) +
+            [v for v in sd_outputs() if v.lower() not in ids and v not in sd_win_outputs()])
 
 
 def sd_multis(pages):
@@ -963,7 +1112,9 @@ def sd_stop():
     import time
     for force in ([], ["/F"]):
         subprocess.run(["taskkill", "/IM", "StreamDeck.exe", *force], capture_output=True, creationflags=NO_WINDOW)
-        for _ in range(20):
+        # ponytail: Stream Deck ignores a polite close (it hides in the tray), so that wait is short;
+        # it saves each change as it's made, so the forced close loses nothing
+        for _ in range(20 if force else 4):
             if not sd_running():
                 return True
             time.sleep(0.5)
@@ -971,8 +1122,30 @@ def sd_stop():
 
 
 def sd_start():
-    if SD_EXE.exists():
-        subprocess.Popen([str(SD_EXE)], creationflags=NO_WINDOW)
+    """Reopen Stream Deck as its own process, so it keeps running whatever happens to this app."""
+    if not SD_EXE.exists():
+        return
+    detached = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    try:
+        subprocess.Popen([str(SD_EXE)], creationflags=detached | 0x01000000, close_fds=True)  # + break away from job
+    except OSError:
+        subprocess.Popen([str(SD_EXE)], creationflags=detached, close_fds=True)
+
+
+def sd_push(writes, folders, sd_dir=SD_DIR, backups=SD_BACKUPS):
+    """Get edited pages into Stream Deck: close it if it runs (it rewrites its profiles on exit), back up, write,
+    read every file back to check it, reopen. Slow (Stream Deck takes seconds to close) - run it off the UI thread.
+    Returns the backup zip; raises RuntimeError / OSError when something didn't work."""
+    if sd_running() and not sd_stop():
+        raise RuntimeError("Couldn't close Stream Deck. Close it yourself and try again.")
+    try:
+        backup = sd_save(writes, folders, sd_dir, backups)
+        bad = [p for p, d in writes.items() if json.loads(Path(p).read_text(encoding="utf-8")) != d]
+        if bad:
+            raise RuntimeError(f"{len(bad)} page(s) didn't read back as written. Backup: {backup}")
+        return backup
+    finally:
+        sd_start()
 
 
 def sd_save(writes, folders, sd_dir=SD_DIR, backups=SD_BACKUPS):
@@ -1112,6 +1285,69 @@ def ui_menu(widget, event, items):
         m.grab_release()
 
 
+def ui_background(widget, work, finish):
+    """Run work() on a worker thread and hand its result (or the exception it raised) to finish() back on the
+    UI thread, so the window keeps responding during slow jobs like restarting Stream Deck."""
+    import queue
+    import threading
+    q = queue.Queue()
+
+    def run():
+        try:
+            q.put(work())
+        except Exception as e:
+            q.put(e)
+    threading.Thread(target=run, daemon=True).start()
+
+    def poll():
+        try:
+            res = q.get_nowait()
+        except queue.Empty:
+            return widget.after(100, poll)
+        finish(res)
+    widget.after(100, poll)
+
+
+def ui_multi_rows(tree, on_double, on_drop=None):
+    """Treeview clicks that keep a multi-selection: pressing on a row that's already selected (several are) leaves
+    the selection alone, so the rows can be dragged together (on_drop(event) on release) or all edited with a
+    double-click (on_double(event)). A plain single click still narrows to that row, once it's clearly not
+    the first half of a double-click."""
+    st = {}
+
+    def press(e):
+        it = tree.identify_row(e.y)
+        if st.get("job"):
+            tree.after_cancel(st.pop("job"))
+        st.update(x=e.x_root, y=e.y_root, item=it, moved=False, keep=False)
+        if it and it in tree.selection() and len(tree.selection()) > 1 and not e.state & 0x0005:
+            st["keep"] = True
+            return "break"
+
+    def motion(e):
+        if on_drop and st.get("item") and abs(e.x_root - st["x"]) + abs(e.y_root - st["y"]) > 8:
+            st["moved"] = True
+            tree.config(cursor="fleur")
+
+    def release(e):
+        tree.config(cursor="")
+        if st.get("moved"):
+            st["moved"] = False
+            on_drop(e)
+        elif st.get("keep") and st.get("item"):
+            st["job"] = tree.after(350, lambda it=st["item"]: tree.exists(it) and tree.selection_set(it))
+
+    def double(e):
+        if st.get("job"):
+            tree.after_cancel(st.pop("job"))
+        on_double(e)
+        return "break"  # stop the class binding from narrowing the selection on the second press
+    tree.bind("<ButtonPress-1>", press)
+    tree.bind("<B1-Motion>", motion)
+    tree.bind("<ButtonRelease-1>", release)
+    tree.bind("<Double-Button-1>", double)
+
+
 def ui_busy_focus(widget):
     """True while the user is typing somewhere (keyboard shortcuts then leave the keys alone)."""
     try:
@@ -1160,7 +1396,8 @@ class DeckGrid:
                     w.bind("<ButtonPress-1>", lambda e, p=pos: self.drag.update(src=p, x=e.x_root, y=e.y_root))
                     w.bind("<B1-Motion>", self._motion)
                     w.bind("<ButtonRelease-1>", lambda e, p=pos: self._release(e, p))
-                    w.bind("<Double-Button-1>", lambda e, p=pos: self.on_double and self.on_double(p, e))
+                    w.bind("<Double-Button-1>", lambda e, p=pos: (self.drag.update(double=True),  # its release isn't a click
+                                                                   self.on_double and self.on_double(p, e)))
                     w.bind("<Button-3>", lambda e, p=pos: self.on_menu and self.on_menu(p, e))
                     if self.tip:
                         Tip(w, lambda p=pos: self.tip(p))
@@ -1178,6 +1415,8 @@ class DeckGrid:
 
     def _release(self, e, pos):
         d, self.drag = self.drag, {}
+        if d.get("double"):  # the release ending a double-click would otherwise unselect the key just opened
+            return
         if d.get("moved"):
             self.tiles[d["src"]].config(cursor="hand2")
             dst = self.key_at(e.x_root, e.y_root)
@@ -1251,8 +1490,151 @@ def ui_sound_form(parent, v):
     for i, (label, w) in enumerate(fields):
         ttk.Label(f, text=label, style="Field.TLabel").grid(row=0, column=i, sticky="w", padx=(0, 14))
         w.grid(row=1, column=i, sticky="sw", padx=(0, 14))
-    Tip(out, "Devices Stream Deck has saved itself are listed first (exact); Windows device names follow.")
+    Tip(out, "Shown by name like in Stream Deck; saved as the device id Stream Deck uses.")
     return f
+
+
+def ui_obs_levels(parent, cfg):
+    """Let the user set their own OBS level per kind of sound (saved in cfg["obs_levels"]). True when changed."""
+    import tkinter as tk
+    from tkinter import messagebox, ttk
+    win = tk.Toplevel(parent)
+    win.title("My OBS levels")
+    win.transient(parent.winfo_toplevel())
+    win.configure(bg=UI["bg"])
+    body = ttk.Frame(win, padding=16)
+    body.pack(fill="both", expand=True)
+    ttk.Label(body, text="How loud each kind of sound should sit in your OBS mix: its average level in dB while it "
+                         "plays (0 = full scale, so lower = quieter).\nTo match your mic: talk normally and watch "
+                         "your mic in OBS's mixer. The defaults assume it peaks around -10 dB, which averages about "
+                         "-16 dB.", style="Hint.TLabel", wraplength=460, justify="left").pack(anchor="w")
+    vals = {kind: tk.StringVar(value=f"{SD_LEVELS[kind]:g}") for kind in SD_OBS_DEFAULT}
+    grid = ttk.Frame(body)
+    grid.pack(anchor="w", pady=12)
+    for i, (kind, label) in enumerate((("voice", "Voice lines (as loud as your mic)"),
+                                       ("effect", "Alerts and sound effects"),
+                                       ("music / ambience", "Music beds and ambience (under your voice)"))):
+        ttk.Label(grid, text=label).grid(row=i, column=0, sticky="w", pady=3)
+        ttk.Spinbox(grid, textvariable=vals[kind], from_=-60, to=0, increment=1, width=6).grid(row=i, column=1, padx=8)
+        ttk.Label(grid, text=f"dB   (default {SD_OBS_DEFAULT[kind]:g})", style="Hint.TLabel").grid(row=i, column=2,
+                                                                                            sticky="w")
+    res = [False]
+
+    def ok():
+        try:
+            new = {kind: float(v.get()) for kind, v in vals.items()}
+            assert all(-60 <= x <= 0 for x in new.values())
+        except (ValueError, AssertionError):
+            return messagebox.showerror("My OBS levels", "Each level is a number from -60 to 0 dB.", parent=win)
+        res[0] = new != SD_LEVELS
+        cfg["obs_levels"] = sd_set_levels(new)
+        win.destroy()
+    bar = ttk.Frame(body)
+    bar.pack(fill="x")
+    ttk.Button(bar, text="Reset to defaults", command=lambda: [vals[kd].set(f"{d:g}") for kd, d in
+                                                                SD_OBS_DEFAULT.items()]).pack(side="left")
+    ttk.Button(bar, text="OK", style="Accent.TButton", command=ok).pack(side="right")
+    ttk.Button(bar, text="Cancel", command=win.destroy).pack(side="right", padx=8)
+    win.bind("<Escape>", lambda e: win.destroy())
+    win.grab_set()
+    win.wait_window()
+    return res[0]
+
+
+def sd_levels_text():
+    return "  /  ".join(f"{k} {v:g} dB" for k, v in SD_LEVELS.items())
+
+
+def ui_level_report(parent, rows, names, preset):
+    """List each sound's measured level against its target (rows from sd_level_rows; names: {id(sound): key name}).
+    Returns True when the user presses Tune to apply the listed changes."""
+    import tkinter as tk
+    from tkinter import ttk
+    win = tk.Toplevel(parent)
+    win.title("Sound levels")
+    win.transient(parent.winfo_toplevel())
+    win.configure(bg=UI["bg"])
+    body = ttk.Frame(win, padding=16)
+    body.pack(fill="both", expand=True)
+    fix = sum(r["new"] is not None for r in rows)
+    ok = sum(r["verdict"] == "in range" for r in rows)
+    ttk.Label(body, text=f"{len(rows)} sound(s) checked against {preset}: {ok} in range, {fix} to change, "
+                         f"{len(rows) - ok - fix} that can't be fixed with volume (too quiet at full, missing or "
+                         "silent). Levels are dB, loudest channel, silence left out.",
+              style="Hint.TLabel", wraplength=900).pack(anchor="w", pady=(0, 8))
+    cols = ("key", "file", "kind", "level", "now", "target", "result")
+    tv = ttk.Treeview(body, columns=cols, show="headings", height=min(max(len(rows), 4), 18))
+    for c, h, w in zip(cols, ("Key", "File", "Detected as", "File level", "Plays at now", "Target", "Result"),
+                       (110, 220, 110, 70, 80, 60, 260)):
+        tv.heading(c, text=h)
+        tv.column(c, width=w, stretch=c in ("file", "result"))
+    f = lambda v: "" if v is None else f"{v:.1f}"
+    rank = lambda r: (0 if r["new"] is not None else 1 if r["now"] is not None and r["verdict"] != "in range"
+                      else 2 if r["now"] is None else 3)  # changes, can't-fix, missing/silent, fine
+    for r in sorted(rows, key=rank):
+        se = r["s"].get("Settings", {})
+        tv.insert("", "end", values=(names.get(id(r["s"]), ""), Path(se.get("path", "")).name, r["kind"],
+                                     f(r["level"]), f(r["now"]), f(r["target"]), r["verdict"]))
+    tv.pack(fill="both", expand=True)
+    res = [False]
+    bar = ttk.Frame(body)
+    bar.pack(fill="x", pady=(12, 0))
+    go = ttk.Button(bar, text=f"Tune {fix} sound(s)", style="Accent.TButton",
+                    command=lambda: (res.__setitem__(0, True), win.destroy()))
+    go.pack(side="right")
+    if not fix:
+        go.state(["disabled"])
+    ttk.Button(bar, text="Close", command=win.destroy).pack(side="right", padx=8)
+    win.bind("<Escape>", lambda e: win.destroy())
+    win.grab_set()
+    win.wait_window()
+    return res[0]
+
+
+def ui_new_key_dialog(parent, files):
+    """Make one key from files: pick Single / Random / Multi Action and the settings every sound gets.
+    Returns the new action, or None when cancelled."""
+    import tkinter as tk
+    from tkinter import ttk
+    win = tk.Toplevel(parent)
+    win.title(f"New key - {len(files)} sound(s)")
+    win.transient(parent.winfo_toplevel())
+    win.configure(bg=UI["bg"])
+    body = ttk.Frame(win, padding=16)
+    body.pack(fill="both", expand=True)
+    ttk.Label(body, text="\n".join(Path(f).name for f in files[:8]) + (f"\n... and {len(files) - 8} more"
+              if len(files) > 8 else ""), style="Hint.TLabel").pack(anchor="w")
+    kinds = ("Single sound",) if len(files) == 1 else ("Random Action", "Multi Action")
+    kind = tk.StringVar(value=kinds[0])
+    kf = ttk.Frame(body)
+    kf.pack(fill="x", pady=(10, 0))
+    for k, hint in zip(kinds, ("plays it", ) if len(files) == 1 else ("one random sound per press",
+                                                                       "all play together")):
+        ttk.Radiobutton(kf, text=f"{k} ({hint})", variable=kind, value=k).pack(anchor="w")
+    name = tk.StringVar(value=(Path(files[0]).stem if len(files) == 1 else Path(files[0]).parent.name)[:20])
+    ttk.Label(body, text="NAME", style="Field.TLabel").pack(anchor="w", pady=(10, 0))
+    ttk.Entry(body, textvariable=name, width=24).pack(anchor="w")
+    v = {"mode": tk.StringVar(value=SD_MODES[0]), "fade": tk.StringVar(value=SD_FADES[0]),
+         "fade_len": tk.StringVar(value="1"), "volume": tk.IntVar(value=100),
+         "output": tk.StringVar(value=SD_DEFAULT_OUT)}
+    ttk.Label(body, text="EVERY SOUND GETS", style="Field.TLabel").pack(anchor="w", pady=(12, 0))
+    ui_sound_form(body, v).pack(fill="x", pady=4)
+    result = [None]
+
+    def ok():
+        single = kind.get() == "Single sound"
+        plays = [sd_play(Path(f), name.get() if single else Path(f).stem[:20], v["mode"].get(), v["fade"].get(),
+                         v["fade_len"].get(), int(v["volume"].get()), v["output"].get()) for f in files]
+        result[0] = plays[0] if single else sd_wrap(kind.get(), name.get(), plays)
+        win.destroy()
+    bar = ttk.Frame(body)
+    bar.pack(fill="x", pady=(14, 0))
+    ttk.Button(bar, text="Create key", style="Accent.TButton", command=ok).pack(side="right")
+    ttk.Button(bar, text="Cancel", command=win.destroy).pack(side="right", padx=8)
+    win.bind("<Escape>", lambda e: win.destroy())
+    win.grab_set()
+    win.wait_window()
+    return result[0]
 
 
 def ui_key_dialog(parent, action):
@@ -1333,7 +1715,7 @@ def ui_key_dialog(parent, action):
             ok = Path(se.get("path", "")).is_file()
             return (Path(se.get("path", "")).name + ("" if ok else "  (missing)"), pick(SD_MODES, se.get("actionType")),
                     pick(SD_FADES, se.get("fadeType")) + (f" {se.get('fadeLen', 1)}s" if se.get("fadeType") else ""),
-                    se.get("volume", 100), se.get("outputType") or "default")
+                    se.get("volume", 100), sd_out_name(se.get("outputType")))
 
         def fill(select=0):
             tv.delete(*tv.get_children())
@@ -1356,7 +1738,7 @@ def ui_key_dialog(parent, action):
             v["fade"].set(pick(SD_FADES, se.get("fadeType")))
             v["fade_len"].set(str(se.get("fadeLen", 1)))
             v["volume"].set(int(se.get("volume", 100)))
-            v["output"].set(se.get("outputType") or SD_DEFAULT_OUT)
+            v["output"].set(sd_out_name(se["outputType"]) if se.get("outputType") else SD_DEFAULT_OUT)
             loading[0] = False
 
         def on_var(*_):
@@ -1431,7 +1813,14 @@ def ui_key_dialog(parent, action):
                 v["path"].set(str(Path(f)))
         ttk.Button(fr, text="Browse...", style="Tool.TButton", command=browse).pack(side="left", padx=(6, 0))
         ttk.Button(fr, text="Preview", style="Tool.TButton", command=preview).pack(side="left", padx=(6, 0))
-        for text, cmd in (("Add sounds...", add_sounds), ("Remove sound", lambda: reorder(0)),
+        def apply_all():
+            if not cur[0]:
+                return
+            sd_set_sound(sd_sounds(work[0]), v["mode"].get(), v["fade"].get(), v["fade_len"].get(),
+                         int(v["volume"].get()), output=v["output"].get())
+            fill(int(tv.selection()[0]) if tv.selection() else 0)
+        for text, cmd in (("Add sounds...", add_sounds), ("Apply to all sounds", apply_all),
+                          ("Remove sound", lambda: reorder(0)),
                           ("Move up", lambda: reorder(-1)), ("Move down", lambda: reorder(1))):
             ttk.Button(btns, text=text, style="Tool.TButton", command=cmd).pack(side="left", padx=(0, 6))
         fill()
@@ -1468,14 +1857,120 @@ def ui_key_dialog(parent, action):
     return result[0]
 
 
+def ui_bulk_dialog(parent, actions):
+    """Edit many keys at once. Each field starts on the value the keys share, or Keep when they differ; only
+    fields moved off their starting value are applied. Returns the changes as a dict, or None when cancelled:
+    title, mode, fade, fade_len, volume, output (sounds) and style (Stream Deck title fields)."""
+    import tkinter as tk
+    from tkinter import colorchooser, messagebox, ttk
+    keep = "Keep (mixed)"
+    sounds = [s for a in actions for s in sd_sounds(a)]
+    se = [s.get("Settings", {}) for s in sounds]
+    states = [(a.get("States") or [{}])[0] for a in actions]
+    pick = lambda t, i: t[i] if isinstance(i, int) and 0 <= i < len(t) else t[0]
+    same = lambda vals, other=keep: vals[0] if vals and all(x == vals[0] for x in vals) else other
+    start = {"title": same([sd_title(a) for a in actions], ""),
+             "show": same(["Show" if x.get("ShowTitle", True) else "Hide" for x in states]),
+             "size": same([str(x.get("FontSize", "")) for x in states]) or keep,
+             "align": same([x.get("TitleAlignment") or "bottom" for x in states]),
+             "mode": same([pick(SD_MODES, x.get("actionType")) for x in se]),
+             "fade": same([pick(SD_FADES, x.get("fadeType")) for x in se]),
+             "fade_len": same([str(x.get("fadeLen", 1)) for x in se]),
+             "volume": same([str(x.get("volume", 100)) for x in se]),
+             "output": same([sd_out_name(x["outputType"]) if x.get("outputType") else SD_DEFAULT_OUT for x in se])}
+    v = {k: tk.StringVar(value=val) for k, val in start.items()}
+    color, result = tk.StringVar(), [None]
+    win = tk.Toplevel(parent)
+    win.title(f"Edit {len(actions)} keys together")
+    win.transient(parent.winfo_toplevel())
+    win.configure(bg=UI["bg"])
+    body = ttk.Frame(win, padding=16)
+    body.pack(fill="both", expand=True)
+    ttk.Label(body, style="Hint.TLabel", text=f"{len(actions)} keys, {len(sounds)} sounds. Fields showing "
+              f"'{keep}' differ between the keys and are left alone unless you change them.").pack(anchor="w")
+
+    def grid(frame, rows):
+        for r, (label, w) in enumerate(rows):
+            ttk.Label(frame, text=label, width=16).grid(row=r, column=0, sticky="w", pady=3)
+            w.grid(row=r, column=1, sticky="w", pady=3)
+    kf = ttk.LabelFrame(body, text="Keys")
+    kf.pack(fill="x", pady=(10, 0))
+    cf = ttk.Frame(kf)
+    sw = tk.Label(cf, width=3, bg=UI["panel"], relief="solid", bd=1)
+    sw.pack(side="left", padx=(0, 6))
+
+    def pick_color():
+        c = colorchooser.askcolor("#ffffff", parent=win, title="Name colour")[1]
+        if c:
+            color.set(c)
+            sw.config(bg=c)
+    ttk.Button(cf, text="Pick...", style="Tool.TButton", command=pick_color).pack(side="left")
+    combo = lambda frame, key, values, width=18, ro=True: ttk.Combobox(
+        frame, textvariable=v[key], values=(keep,) + tuple(values), state="readonly" if ro else "normal", width=width)
+    grid(kf, (("Name", ttk.Entry(kf, textvariable=v["title"], width=28)),
+              ("Show name", combo(kf, "show", ("Show", "Hide"))),
+              ("Font size", combo(kf, "size", ("7", "8", "9", "10", "11", "12", "14", "16", "18", "20", "24"))),
+              ("Name position", combo(kf, "align", ("top", "middle", "bottom"))),
+              ("Name colour", cf)))
+    if start["title"] == "" and len({sd_title(a) for a in actions}) > 1:
+        ttk.Label(kf, text="(names differ - leave blank to keep each key's own name)", style="Hint.TLabel").grid(
+            row=0, column=2, sticky="w", padx=6)
+    sf = ttk.LabelFrame(body, text="Sounds on these keys")
+    sf.pack(fill="x", pady=(10, 0))
+    if sounds:
+        out = combo(sf, "output", (), 44, ro=False)
+        out.config(postcommand=lambda: out.config(values=(keep,) + tuple(sd_output_choices())))
+        grid(sf, (("Action", combo(sf, "mode", SD_MODES)), ("Fade", combo(sf, "fade", SD_FADES)),
+                  ("Fade length (s)", combo(sf, "fade_len", ("1", "2", "3", "4", "5"), 14)),
+                  ("Volume (0-100)", combo(sf, "volume", [str(n) for n in range(0, 101, 10)], 14, ro=False)),
+                  ("Output device", out)))
+    else:
+        ttk.Label(sf, text="None of these keys plays a sound.", style="Hint.TLabel").pack(anchor="w")
+
+    def ok():
+        ch = {k: x.get().strip() for k, x in v.items()
+              if x.get().strip() != start[k] and x.get().strip() != keep and (k != "title" or x.get().strip())}
+        if "volume" in ch:
+            try:
+                ch["volume"] = int(ch["volume"])
+                assert 0 <= ch["volume"] <= 100
+            except (ValueError, AssertionError):
+                return messagebox.showerror("Volume", "Volume is a whole number from 0 to 100.", parent=win)
+        style = {}
+        if "show" in ch:
+            style["ShowTitle"] = ch.pop("show") == "Show"
+        if "size" in ch:
+            style["FontSize"] = int(ch.pop("size"))
+        if "align" in ch:
+            style["TitleAlignment"] = ch.pop("align")
+        if color.get():
+            style["TitleColor"] = color.get()
+        if style:
+            ch["style"] = style
+        result[0] = ch
+        win.destroy()
+    bar = ttk.Frame(body)
+    bar.pack(fill="x", pady=(14, 0))
+    ttk.Button(bar, text=f"Apply to {len(actions)} keys", style="Accent.TButton", command=ok).pack(side="right")
+    ttk.Button(bar, text="Cancel", command=win.destroy).pack(side="right", padx=8)
+    win.bind("<Escape>", lambda e: win.destroy())
+    win.bind("<Return>", lambda e: ok())
+    win.update_idletasks()
+    p = parent.winfo_toplevel()
+    win.geometry(f"+{p.winfo_rootx() + max(0, (p.winfo_width() - win.winfo_width()) // 2)}"
+                 f"+{p.winfo_rooty() + max(0, (p.winfo_height() - win.winfo_height()) // 3)}")
+    win.grab_set()
+    win.wait_window()
+    return result[0]
+
+
 GOAL_HELP = {
     "Set them up for a purpose": "One click sets the action, fade and (for some) volume to suit what the sounds are for.",
     "Playback and fade": "Change how a press plays the sound. Keep = leave that setting as it is.",
     "Volume": "Set, nudge or even out the volume of every sound on the selected keys.",
     "Output device": "Sets every sound on the selected keys, including all sounds inside a Multi or Random Action "
-                     "(Jump to Multi / Random at the top picks one). Devices Stream Deck has saved itself are listed "
-                     "first and are exact. If a key still plays on the default output with a Windows name, set one "
-                     "key's output inside Stream Deck once, then pick the value that appears at the top here.",
+                     "(Jump to Multi / Random at the top picks one). The list shows the devices by name, as Stream "
+                     "Deck does; the app saves each device's Windows id, which is what Stream Deck itself saves.",
     "Key names and look": "Rename keys in bulk and change how their names look. Double-click a key to edit one.",
     "Arrange keys": "You can also drag keys on the grid to move or swap them, and right-click a key for more.",
     "Fix missing sound files": "Points broken sound keys (red) at a file with the same name anywhere in this folder "
@@ -1483,8 +1978,9 @@ GOAL_HELP = {
 }
 
 
-def sd_editor_tab(page):
-    """Edit the buttons of profiles already in the local Stream Deck app: select keys, use a tool, save."""
+def sd_editor_tab(page, cfg):
+    """Edit the buttons of profiles already in the local Stream Deck app: select keys, use a tool, save.
+    Returns {pending, save, saving} so the window can send unsent changes when it closes; None without Stream Deck."""
     import copy
     import tkinter as tk
     from tkinter import colorchooser, filedialog, messagebox, ttk
@@ -1512,24 +2008,29 @@ def sd_editor_tab(page):
         profs[lbl] = (folder, m)
     labels_ = sorted(profs, key=lambda s: (not s.startswith("[connected]"), s.lower()))
     edits = {}  # page manifest path -> edited json (unsaved)
-    st = {"pages": [], "page": None, "sel": []}
+    st = {"pages": [], "named": [], "idx": None, "page": None, "sel": [], "back": []}
     hist = {"undo": [], "redo": [], "clip": None}
+    FOLDER, PARENT = "com.elgato.streamdeck.profile.openchild", "com.elgato.streamdeck.profile.backtoparent"
 
     # toolbar
     bar = ttk.Frame(page, padding=(10, 10, 10, 4))
     bar.pack(fill="x")
-    prof_v, page_v, multi_v, multi_map = tk.StringVar(value=labels_[0] if labels_ else ""), tk.StringVar(), \
-        tk.StringVar(), {}
+    prof_v, multi_v, multi_map = tk.StringVar(value=labels_[0] if labels_ else ""), tk.StringVar(), {}
     ttk.Label(bar, text="Profile").pack(side="left")
     ttk.Combobox(bar, textvariable=prof_v, values=labels_, state="readonly", width=40).pack(side="left", padx=(6, 14))
-    ttk.Label(bar, text="Page").pack(side="left")
-    page_cb = ttk.Combobox(bar, textvariable=page_v, state="readonly", width=16)
-    page_cb.pack(side="left", padx=(6, 14))
     ttk.Label(bar, text="Jump to Multi / Random").pack(side="left")
     multi_cb = ttk.Combobox(bar, textvariable=multi_v, state="readonly", width=44)
     multi_cb.pack(side="left", padx=6)
     save_btn = ttk.Button(bar, text="Save to Stream Deck", style="Accent.TButton")
     save_btn.pack(side="right")
+    auto_v = tk.BooleanVar(value=cfg.get("sd_autosend", True))
+    auto_v.trace_add("write", lambda *_: (cfg.update(sd_autosend=auto_v.get()), changed()))
+    ab = ttk.Checkbutton(bar, text="Send changes automatically", variable=auto_v)
+    ab.pack(side="right", padx=(0, 10))
+    Tip(ab, "Each change goes to Stream Deck about 1.5 s after you stop editing. Stream Deck closes and reopens "
+            "for a few seconds to take it. Off = changes wait for Save to Stream Deck (Ctrl+S).")
+    unsent_l = ttk.Label(bar, font=("Segoe UI", 9, "bold"))
+    unsent_l.pack(side="right", padx=(0, 12))
     tbtn = {}
     for name, text, tip in (("revert", "Revert", "Throw away every unsaved change (can be undone)"),
                             ("redo", "Redo", "Ctrl+Y"), ("undo", "Undo", "Ctrl+Z")):
@@ -1539,13 +2040,45 @@ def sd_editor_tab(page):
 
     panes = ttk.PanedWindow(page, orient="horizontal")
     panes.pack(fill="both", expand=True, padx=10, pady=6)
+    pages_f = ttk.LabelFrame(panes, text="Pages")
     left = ttk.LabelFrame(panes, text="Keys")
     right = ttk.LabelFrame(panes, text="Tools for the selected keys")
+    panes.add(pages_f, weight=1)
     panes.add(left, weight=3)
     panes.add(right, weight=2)
     status = ttk.Label(page, style="Status.TLabel", anchor="w",
                        text="Pick a profile and page. Click keys to select them (Ctrl+click adds).")
     status.pack(fill="x", padx=12, pady=(0, 8))
+
+    # pages: list with per-page counts, prev / next, jump to problems, folder back
+    nav = ttk.Frame(pages_f)
+    nav.pack(fill="x")
+    prev_b = ttk.Button(nav, text="< Prev", style="Tool.TButton", command=lambda: go_page(st["idx"] - 1))
+    next_b = ttk.Button(nav, text="Next >", style="Tool.TButton", command=lambda: go_page(st["idx"] + 1))
+    prev_b.pack(side="left")
+    next_b.pack(side="left", padx=4)
+    count_l = ttk.Label(nav, style="Hint.TLabel")
+    count_l.pack(side="left", padx=6)
+    Tip(prev_b, "Previous page (PgUp)")
+    Tip(next_b, "Next page (PgDn)")
+    pcols = ("page", "keys", "sounds", "missing")
+    ptv = ttk.Treeview(pages_f, columns=pcols, show="headings", selectmode="browse", height=8)
+    for c, h, w in zip(pcols, ("Page", "Keys", "Sounds", "Missing"), (150, 45, 55, 60)):
+        ptv.heading(c, text=h)
+        ptv.column(c, width=w, stretch=c == "page", anchor="w" if c == "page" else "center")
+    ptv.tag_configure("missing", foreground="#b91c1c")
+    ptv.tag_configure("edited", font=("Segoe UI", 10, "bold"))
+    ptv.pack(fill="both", expand=True, pady=6)
+    nav2 = ttk.Frame(pages_f)
+    nav2.pack(fill="x")
+    issue_b = ttk.Button(nav2, text="Next page with missing sounds", style="Tool.TButton",
+                         command=lambda: next_issue())
+    issue_b.pack(fill="x")
+    back_b = ttk.Button(nav2, text="Back (out of folder)", style="Tool.TButton", command=lambda: go_back())
+    back_b.pack(fill="x", pady=(4, 0))
+    Tip(back_b, "Alt+Left. Also: double-click the Parent Folder key")
+    ttk.Label(pages_f, text="Red = has missing sound files\nBold * = unsaved changes\nDouble-click a folder key "
+                            "to open it", style="Hint.TLabel", justify="left").pack(anchor="w", pady=(6, 0))
 
     # left: selection buttons, the deck, legend, details
     sb = ttk.Frame(left)
@@ -1558,6 +2091,9 @@ def sd_editor_tab(page):
         b = ttk.Button(sb, text=text, style="Tool.TButton", command=lambda t=test: select(t))
         b.pack(side="left", padx=(0, 4))
         Tip(b, tip)
+    eb = ttk.Button(sb, text="Edit selected...", style="Tool.TButton", command=lambda: bulk_edit())
+    eb.pack(side="right")
+    Tip(eb, "Edit every selected key in one window (Ctrl+E / Enter)")
 
     def tile(pos):
         a, on = keys_now().get(pos), pos in st["sel"]
@@ -1582,17 +2118,33 @@ def sd_editor_tab(page):
                          f", vol {se.get('volume', '?')}){miss}")
         if len(sd_sounds(a)) > 10:
             lines.append(f"  ...and {len(sd_sounds(a)) - 10} more")
-        return "\n".join(lines + ["Double-click to edit; drag to move; right-click for more."])
+        how = ("Double-click to open this folder" if a.get("UUID") == FOLDER else
+               "Double-click to go back out of the folder" if a.get("UUID") == PARENT else "Double-click to edit")
+        return "\n".join(lines + [f"{how}; drag to move; right-click for more."])
 
     def click(pos, e):
-        if e.state & 0x0005:  # Ctrl / Shift: add or remove
-            st["sel"].remove(pos) if pos in st["sel"] else st["sel"].append(pos)
+        if e.state & 0x0001 and st.get("anchor"):  # Shift: the rectangle from the last clicked key
+            c1, r1 = map(int, st["anchor"].split(","))
+            c2, r2 = map(int, pos.split(","))
+            st["sel"] = [f"{c},{r_}" for r_ in range(min(r1, r2), max(r1, r2) + 1)
+                         for c in range(min(c1, c2), max(c1, c2) + 1)]
         else:
-            st["sel"] = [] if st["sel"] == [pos] else [pos]
+            if e.state & 0x0004:  # Ctrl: add or remove one key
+                st["sel"].remove(pos) if pos in st["sel"] else st["sel"].append(pos)
+            else:
+                st["sel"] = [] if st["sel"] == [pos] else [pos]
+            st["anchor"] = pos
         draw()
 
-    deck = DeckGrid(left, tile, on_click=click, on_double=lambda p, e: (edit_key(p) if keys_now().get(p)
-                                                                        else new_key(p)),
+    def double(pos):
+        a = keys_now().get(pos)
+        if a and a.get("UUID") == FOLDER:
+            return open_folder(pos)
+        if a and a.get("UUID") == PARENT:
+            return go_back()
+        return edit_key(pos) if a else new_key(pos)
+
+    deck = DeckGrid(left, tile, on_click=click, on_double=lambda p, e: double(p),
                     on_menu=lambda p, e: key_menu(p, e), on_drop=lambda a, b: drop(a, b), tip=tip_for)
     deck.frame.pack(pady=(10, 6))
     legend = ttk.Frame(left)
@@ -1601,12 +2153,12 @@ def sd_editor_tab(page):
                         (UI["accent"], "selected")):
         tk.Label(legend, bg=color, width=2, relief="solid", bd=1).pack(side="left")
         ttk.Label(legend, text=text, style="Hint.TLabel").pack(side="left", padx=(4, 14))
-    ttk.Label(legend, text="Drag = move/swap  -  Double-click = edit  -  Right-click = more",
+    ttk.Label(legend, text="Ctrl/Shift+click = select several  -  Drag = move/swap  -  Double-click = edit",
               style="Hint.TLabel").pack(side="right")
     dcols = ("key", "name", "type", "mode", "fade", "volume", "output", "file")
     dt = ttk.Frame(left)
     dt.pack(fill="both", expand=True, pady=(8, 0))
-    details = ttk.Treeview(dt, columns=dcols, show="headings", height=4, selectmode="browse")
+    details = ttk.Treeview(dt, columns=dcols, show="headings", height=4, selectmode="extended")
     for c, h, w in zip(dcols, ("Key", "Name", "Type", "Action", "Fade", "Vol", "Output", "File"),
                        (45, 120, 90, 105, 120, 45, 130, 200)):
         details.heading(c, text=h)
@@ -1615,7 +2167,7 @@ def sd_editor_tab(page):
     details.config(yscrollcommand=dys.set)
     dys.pack(side="right", fill="y")
     details.pack(fill="both", expand=True)
-    ttk.Label(left, text="Double-click a cell above to change it; double-click File to pick another file.",
+    ttk.Label(left, text="Double-click a cell to change it - select several rows first to change them all at once.",
               style="Hint.TLabel").pack(anchor="w", pady=(4, 0))
 
     # right: tool list + options
@@ -1631,8 +2183,14 @@ def sd_editor_tab(page):
     help_lbl.pack(fill="x", pady=(0, 8))
     holder = ttk.Frame(opts)
     holder.pack(fill="both", expand=True)
-    apply_btn = ttk.Button(opts, text="Apply", style="Accent.TButton")
-    apply_btn.pack(anchor="e", pady=(8, 0))
+    SCOPES = ("Selected keys", "Every sound key on this page", "Every sound key in this profile (all pages)")
+    scope_v = tk.StringVar(value=SCOPES[0])
+    arow = ttk.Frame(opts)
+    arow.pack(fill="x", pady=(8, 0))
+    ttk.Label(arow, text="Apply to").pack(side="left")
+    ttk.Combobox(arow, textvariable=scope_v, values=SCOPES, state="readonly", width=40).pack(side="left", padx=6)
+    apply_btn = ttk.Button(arow, text="Apply", style="Accent.TButton")
+    apply_btn.pack(side="right")
     frames = {g: ttk.Frame(holder) for g in goals}
     o = {}
 
@@ -1666,12 +2224,27 @@ def sd_editor_tab(page):
     combo(g, "fade_len", "Fade length (s)", ("Keep", "1", "2", "3", "4", "5"), 8)
     g = goals[2]
     o["vol_how"], o["vol"], o["step"] = tk.StringVar(value="set"), tk.IntVar(value=80), tk.IntVar(value=-10)
+    o["tune"] = tk.StringVar(value=SD_AUTO)
+
+    sd_set_levels(cfg.get("obs_levels"))
+
+    def tune_box(fr):
+        ttk.Combobox(fr, textvariable=o["tune"], values=list(SD_TUNE), state="readonly", width=44).pack(side="left")
+        lv = ttk.Label(fr, text=f"{sd_levels_text()}; within {SD_TOL:.0f} dB is left alone", style="Hint.TLabel")
+        ttk.Button(fr, text="My OBS levels...", style="Tool.TButton", command=lambda: ui_obs_levels(page, cfg) and lv.config(
+            text=f"{sd_levels_text()}; within {SD_TOL:.0f} dB is left alone")).pack(side="left", padx=8)
+        lv.pack(side="left")
+        lv.bind("<Map>", lambda e: lv.config(text=f"{sd_levels_text()}; within {SD_TOL:.0f} dB is left alone"))
     for how, text, make in (("set", "Set to", lambda fr: ui_volume(fr, o["vol"], 180).pack(side="left")),
                             ("step", "Change by (+/-)", lambda fr: ttk.Spinbox(fr, textvariable=o["step"], from_=-100,
                                                                               to=100, width=6).pack(side="left")),
                             ("match", "Match loudness", lambda fr: ttk.Label(
                                 fr, text="measures each file; louder ones are turned down to the quietest",
-                                style="Hint.TLabel").pack(side="left"))):
+                                style="Hint.TLabel").pack(side="left")),
+                            ("tune", "Tune to level", tune_box),
+                            ("check", "Check levels", lambda fr: ttk.Label(
+                                fr, text="listens to each sound and lists where it sits; changes nothing until you "
+                                         "press Tune in the list", style="Hint.TLabel").pack(side="left"))):
         fr = ttk.Frame(frames[g])
         fr.pack(fill="x", pady=4)
         ttk.Radiobutton(fr, text=text, variable=o["vol_how"], value=how, width=16).pack(side="left")
@@ -1767,9 +2340,11 @@ def sd_editor_tab(page):
         hist["undo"].append(before)
         del hist["undo"][:-60]
         hist["redo"].clear()
-        status.config(text=f"{msg}. Not saved yet - Save to Stream Deck (Ctrl+S) writes it, Ctrl+Z undoes it.")
-        list_multis()
+        status.config(text=f"{msg}. " + ("Sending to Stream Deck in a moment..." if auto_v.get() else
+                                         "Not sent yet - Save to Stream Deck (Ctrl+S) sends it; Ctrl+Z undoes it."))
+        refresh_lists()
         draw()
+        changed()
 
     def restore(frm, to, msg):
         if not hist[frm]:
@@ -1780,8 +2355,21 @@ def sd_editor_tab(page):
         edits.update(e)
         st["sel"] = sel
         status.config(text=msg)
-        list_multis()
+        refresh_lists()
         draw()
+        changed()
+
+    def changed():
+        """With auto-send on, send to Stream Deck shortly after the last change (one restart per burst of edits)."""
+        if st.get("job"):
+            page.after_cancel(st["job"])
+            st["job"] = None
+        if auto_v.get() and pending():
+            st["job"] = page.after(1500, lambda: save(auto=True))
+
+    def pending():
+        """Pages whose edits haven't reached Stream Deck yet: {page file: json}."""
+        return {p: d for p, d in edits.items() if d != json.loads(p.read_text(encoding="utf-8"))}
 
     def kp_edit():
         return sd_keypad(cur_page())
@@ -1811,13 +2399,22 @@ def sd_editor_tab(page):
                 details.insert("", "end", iid=f"s|{k}|{i}", values=(
                     key if single else "", sd_title(a).replace("\n", " ") if single else "",
                     "Sound" if single else "  sound", SD_MODES[se.get("actionType", 0)] if se.get("actionType", 0) < 4
-                    else "?", fade, se.get("volume", "?"), se.get("outputType") or "default",
+                    else "?", fade, se.get("volume", "?"), sd_out_name(se.get("outputType")),
                     Path(se.get("path", "")).name + miss))
-        dirty = sum(1 for p in edits if edits[p] != json.loads(p.read_text(encoding="utf-8")))
+        dirty = len(pending())
         save_btn.config(text=f"Save to Stream Deck ({dirty} page{'s' * (dirty != 1)} changed)" if dirty
                         else "Save to Stream Deck")
+        unsent_l.config(text=f"{dirty} page{'s' * (dirty != 1)} not sent to Stream Deck yet" if dirty else
+                        "Stream Deck is up to date")
+        unsent_l.config(foreground="#b45309" if dirty else "#047857")
         used = sum(1 for k in st["sel"] if kp.get(k))
-        apply_btn.config(text=f"Apply to {used} key{'s' * (used != 1)}" if used else "Apply")
+        apply_btn.config(text="Apply" if scope_v.get() != SCOPES[0] or not used else
+                         f"Apply to {used} key{'s' * (used != 1)}")
+        n, i = len(st["named"]), st["idx"]
+        prev_b.state(["!disabled"] if i else ["disabled"])
+        next_b.state(["!disabled"] if i is not None and i < n - 1 else ["disabled"])
+        back_b.state(["!disabled"] if st["back"] or parent_of_page() is not None else ["disabled"])
+        count_l.config(text=f"{st['named'][i][0]}  ({i + 1} of {n})" if i is not None else "no pages")
         tbtn["undo"].state(["!disabled"] if hist["undo"] else ["disabled"])
         tbtn["redo"].state(["!disabled"] if hist["redo"] else ["disabled"])
 
@@ -1831,15 +2428,86 @@ def sd_editor_tab(page):
         if prof_v.get() not in profs:
             return
         folder, m = profs[prof_v.get()]
-        named = sd_pages(folder, m)
-        st["pages"], names = [p for _, p in named], [n for n, _ in named]
-        page_cb.config(values=names)
-        page_v.set(names[0] if names else "")
+        st["named"] = sd_pages(folder, m)
+        st["pages"] = [p for _, p in st["named"]]
+        st.update(idx=None, page=None, sel=[], back=[])
+        refresh_lists()
+        go_page(0)
+
+    def page_json(p):
+        return edits.get(p) or json.loads(p.read_text(encoding="utf-8"))
+
+    def page_keys(p):
+        ctrl = next((c for c in page_json(p).get("Controllers") or [] if c.get("Type") == "Keypad"), {})
+        return ctrl.get("Actions") or {}
+
+    def page_stats(p):
+        acts = [a for a in page_keys(p).values() if a]
+        return len(acts), sum(len(sd_sounds(a)) for a in acts), sum(len(sd_missing(a)) for a in acts)
+
+    def refresh_lists():
         list_multis()
+        ptv.delete(*ptv.get_children())
+        for i, (name, p) in enumerate(st["named"]):
+            k, snd, miss = page_stats(p)
+            edited = p in edits and edits[p] != json.loads(p.read_text(encoding="utf-8"))
+            ptv.insert("", "end", iid=str(i), values=(name + (" *" if edited else ""), k, snd, miss or ""),
+                       tags=(("missing",) if miss else ()) + (("edited",) if edited else ()))
+        if st["idx"] is not None:
+            ptv.selection_set(str(st["idx"]))
+
+    def go_page(i, remember=False):
+        if not st["named"]:
+            st.update(idx=None, page=None, sel=[])
+            status.config(text="This profile has no pages.")
+            return draw()
+        i = max(0, min(int(i), len(st["named"]) - 1))
+        if i != st["idx"]:
+            if remember and st["idx"] is not None:
+                st["back"].append(st["idx"])
+            st.update(idx=i, page=st["named"][i][1], sel=[])
+        if ptv.selection() != (str(i),):  # re-selecting fires <<TreeviewSelect>> -> go_page again: an endless loop
+            ptv.selection_set(str(i))
+        ptv.see(str(i))
+        draw()
+
+    def parent_of_page():
+        """Index of the page holding the folder key that opens the current page (None on top-level pages)."""
+        if not st["page"]:
+            return None
+        me = st["page"].parent.name.lower()
+        for i, (_, p) in enumerate(st["named"]):
+            for a in page_keys(p).values():
+                if a and a.get("UUID") == FOLDER and str((a.get("Settings") or {}).get("ProfileUUID", "")).lower() == me:
+                    return i
+        return None
+
+    def open_folder(pos):
+        pid = str((keys_now()[pos].get("Settings") or {}).get("ProfileUUID", "")).lower()
+        i = next((i for i, (_, p) in enumerate(st["named"]) if p.parent.name.lower() == pid), None)
+        if i is None:
+            return status.config(text="That folder's page isn't in this profile.")
+        go_page(i, remember=True)
+        status.config(text=f"Opened {st['named'][i][0]}. Back (Alt+Left) or the Parent Folder key returns.")
+
+    def go_back():
+        i = st["back"].pop() if st["back"] else parent_of_page()
+        if i is not None:
+            go_page(i)
+
+    def next_issue():
+        n = len(st["named"])
+        for step in range(1, n + 1):
+            i = ((st["idx"] or 0) + step) % n
+            if page_stats(st["named"][i][1])[2]:
+                go_page(i)
+                select(lambda a: bool(sd_missing(a)))
+                return status.config(text=f"{st['named'][i][0]}: the red keys have missing files. Try the "
+                                          "'Fix missing sound files' tool, or double-click File in the list.")
+        status.config(text="No page in this profile has missing sound files.")
 
     def list_multis():
-        names = list(page_cb.cget("values"))
-        pages = [(n, edits.get(p) or json.loads(p.read_text(encoding="utf-8"))) for n, p in zip(names, st["pages"])]
+        pages = [(n, page_json(p)) for n, p in st["named"]]
         multi_map.clear()
         for label, k, a in sorted(sd_multis(pages), key=lambda x: not sd_sounds(x[2])):  # sound keys first
             c, r_ = map(int, k.split(","))
@@ -1851,17 +2519,11 @@ def sd_editor_tab(page):
     def on_multi(*_):
         if multi_v.get() in multi_map:
             label, k = multi_map[multi_v.get()]
-            if page_v.get() != label:
-                page_v.set(label)
+            go_page([n for n, _ in st["named"]].index(label))
             st["sel"] = [k]
             draw()
             status.config(text=f"Selected {multi_v.get()}. Choose a tool on the right (e.g. Output device) and Apply.")
 
-    def on_page(*_):
-        names = list(page_cb.cget("values"))
-        st["page"] = st["pages"][names.index(page_v.get())] if page_v.get() in names else None
-        st["sel"] = []
-        draw()
 
     def slot(text):
         c, r_ = sd_key(text, *size())
@@ -1880,18 +2542,11 @@ def sd_editor_tab(page):
 
     def new_key(pos):
         files = filedialog.askopenfilenames(title=f"Sound(s) for key {pos_label(pos)}", filetypes=[
-            ("Audio", " ".join(f"*{e}" for e in AUDIO_EXT)), ("All files", "*.*")])
-        if not files:
+            ("Audio", " ".join(f"*{e}" for e in AUDIO_EXT)), ("All files", "*.*")],
+            initialdir=cfg.get("out_dir") or None)  # where Channel Mirror saved its generated files
+        act = ui_new_key_dialog(page, files) if files else None
+        if not act:
             return
-        plays = [sd_play(Path(f), Path(f).stem[:20]) for f in files]
-        if len(plays) == 1:
-            act = plays[0]
-        else:
-            ans = messagebox.askyesnocancel("New key", f"{len(plays)} sounds: make a Random Action (one random sound "
-                                            "per press)?\n\nNo = Multi Action (all play together)")
-            if ans is None:
-                return
-            act = sd_wrap("Random Action" if ans else "Multi Action", Path(files[0]).parent.name[:20], plays)
         before = snap()
         kp_edit()[pos] = act
         st["sel"] = [pos]
@@ -1973,8 +2628,20 @@ def sd_editor_tab(page):
             draw()
         a = keys_now().get(pos)
         multi_sel = [k for k in st["sel"] if keys_now().get(k) and sd_sounds(keys_now()[k])]
+        many = [k for k in st["sel"] if keys_now().get(k)]
+        if a and len(many) > 1:
+            ui_menu(deck.frame, e, [(f"Edit {len(many)} keys together...   Ctrl+E", bulk_edit), None,
+                                    ("Combine into a Random Action", (lambda: combine("Random Action"))
+                                     if len(multi_sel) > 1 else None),
+                                    ("Combine into a Multi Action", (lambda: combine("Multi Action"))
+                                     if len(multi_sel) > 1 else None),
+                                    ("Copy first key   Ctrl+C", copy_key), None,
+                                    (f"Delete {len(many)} keys   Del", lambda: delete_keys(st["sel"]))])
+            return
         if a:
-            items = [("Edit key...", lambda: edit_key(pos)),
+            items = ([("Open folder", lambda: open_folder(pos)), None] if a.get("UUID") == FOLDER else
+                     [("Go back out of the folder", go_back), None] if a.get("UUID") == PARENT else []) + [
+                     ("Edit key...", lambda: edit_key(pos)),
                      ("Preview sound", (lambda: preview(pos)) if sd_sounds(a) else None), None,
                      ("Copy key   Ctrl+C", copy_key), ("Paste here   Ctrl+V", (lambda: paste_key(pos))
                                                        if hist["clip"] else None), None,
@@ -2005,28 +2672,28 @@ def sd_editor_tab(page):
             return edit_key(k)
 
         def done(val, field=name):
-            before = snap()
-            live = kp_edit()[k]
-            snd = sd_sounds(live)[int(idx[0])] if kind == "s" else None
+            chosen = details.selection()
+            rows = [r for r in chosen if r[0] in "ks"] if item in chosen else [item]  # every selected row
             try:
-                if field == "name":
-                    if not live.get("States"):
-                        live["States"] = [{}]
-                    for x in live["States"]:
-                        x["Title"] = val
-                elif field == "mode":
-                    sd_set_sound([snd], mode=val)
-                elif field == "fade":
-                    sd_set_sound([snd], fade=val)
-                elif field == "volume":
-                    vol = int(val)
-                    assert 0 <= vol <= 100
-                    sd_set_sound([snd], volume=vol)
-                elif field == "output":
-                    sd_set_sound([snd], output=val)
+                vol = int(val) if field == "volume" else None
+                assert vol is None or 0 <= vol <= 100
             except (ValueError, AssertionError):
                 return messagebox.showerror("Volume", "Volume is a whole number from 0 to 100.")
-            commit(before, f"Changed {field} on key {pos_label(k)}")
+            before = snap()
+            for r in rows:
+                rk, rkey, *ridx = r.split("|")
+                live = kp_edit()[rkey]
+                if field == "name":
+                    if rk == "k" or live.get("UUID") == SD_PLAY:
+                        if not live.get("States"):
+                            live["States"] = [{}]
+                        for x in live["States"]:
+                            x["Title"] = val
+                elif rk == "s":
+                    snd = sd_sounds(live)[int(ridx[0])]
+                    sd_set_sound([snd], **{"mode": {"mode": val}, "fade": {"fade": val}, "volume": {"volume": vol},
+                                           "output": {"output": val}}[field])
+            commit(before, f"Changed {field} on {len(rows)} row(s)")
         if name == "name" and (kind == "k" or a.get("UUID") == SD_PLAY):
             ui_cell_edit(details, item, col, sd_title(a), done)
         elif s is None:
@@ -2039,7 +2706,8 @@ def sd_editor_tab(page):
         elif name == "volume":
             ui_cell_edit(details, item, col, str(se.get("volume", 100)), done)
         elif name == "output":
-            ui_cell_edit(details, item, col, se.get("outputType") or SD_DEFAULT_OUT, done, sd_output_choices(), True)
+            ui_cell_edit(details, item, col, sd_out_name(se["outputType"]) if se.get("outputType") else SD_DEFAULT_OUT,
+                         done, sd_output_choices(), True)
         elif name == "file":
             f = filedialog.askopenfilename(title="Sound file", initialdir=str(Path(se.get("path", "")).parent)
                                            if Path(se.get("path", "")).parent.is_dir() else None,
@@ -2049,53 +2717,98 @@ def sd_editor_tab(page):
                 before = snap()
                 sd_sounds(kp_edit()[k])[int(idx[0])]["Settings"]["path"] = str(Path(f))
                 commit(before, f"Changed the file on key {pos_label(k)}")
-    details.bind("<Double-Button-1>", edit_cell)
+    ui_multi_rows(details, edit_cell)
+
+    def targets_for(scope):
+        """[(keypad, key)] the tools act on: the selection, every sound key on this page, or on every page."""
+        if scope == SCOPES[0]:
+            kp = kp_edit()
+            return [(kp, k) for k in st["sel"] if kp.get(k)]
+        if scope == SCOPES[1]:
+            kp = kp_edit()
+            return [(kp, k) for k, a in kp.items() if a and sd_sounds(a)]
+        out = []
+        for _, p in st["named"]:
+            if any(a and sd_sounds(a) for a in page_keys(p).values()):
+                if p not in edits:
+                    edits[p] = json.loads(p.read_text(encoding="utf-8"))
+                kp = sd_keypad(edits[p])
+                out += [(kp, k) for k, a in kp.items() if a and sd_sounds(a)]
+        return out
 
     def apply():
         if not st["page"]:
             return
-        kp = keys_now()
-        sel = [k for k in st["sel"] if kp.get(k)]
-        g = goal_v.get()
-        if not sel and not (g == "Arrange keys" and o["arr"].get() == "stop"):
-            return messagebox.showinfo("Select keys", "Click keys on the grid (or use the Select buttons) first.")
-        if not [s for k in sel for s in sd_sounds(kp[k])] and g in goals[:4]:
-            return messagebox.showinfo("No sounds", "The selected key(s) hold no Play Audio actions "
-                                       "(e.g. a hotkey macro), so there's nothing to change.")
+        g, scope = goal_v.get(), scope_v.get()
+        if g == goals[5] and scope != SCOPES[0]:
+            return messagebox.showinfo("Arrange keys", "Arranging works on the selected keys of this page - set "
+                                       "'Apply to' to 'Selected keys'.")
+        if scope == SCOPES[0] and not any(keys_now().get(k) for k in st["sel"]) and not (
+                g == goals[5] and o["arr"].get() == "stop"):
+            return messagebox.showinfo("Select keys", "Click keys on the grid (Ctrl / Shift+click for several), use "
+                                       "the Select buttons, or set 'Apply to' to a whole page or the profile.")
+        targets = targets_for(scope)  # loads the pages first, so undo restores them too
         before = snap()
         kp = kp_edit()
-        sounds = [s for k in sel for s in sd_sounds(kp[k])]
+        sel = [k for k in st["sel"] if kp.get(k)]
+        sounds = [s for kpx, k in targets for s in sd_sounds(kpx[k])]
+        if not sounds and g in goals[:4]:
+            edits.clear()
+            edits.update(before[0])
+            return messagebox.showinfo("No sounds", "There are no Play Audio actions there (e.g. only hotkey "
+                                       "macros), so there's nothing to change.")
+        where = {SCOPES[0]: f"{len(targets)} selected key(s)", SCOPES[1]: f"{len(targets)} key(s) on this page",
+                 SCOPES[2]: f"{len(targets)} key(s) across the profile"}[scope]
         keep = lambda x: None if x == "Keep" else x
         try:
             if g == goals[0]:
                 mode, fade, secs, vol = SD_GOALS[o["goal"].get()]
                 sd_set_sound(sounds, mode, fade, secs, vol)
-                msg = f"{len(sounds)} sound(s) set up for: {o['goal'].get()}"
+                msg = f"{len(sounds)} sound(s) on {where} set up for: {o['goal'].get()}"
             elif g == goals[1]:
                 sd_set_sound(sounds, keep(o["mode"].get()), keep(o["fade"].get()), keep(o["fade_len"].get()))
-                msg = f"Playback changed on {len(sounds)} sound(s)"
+                msg = f"Playback changed on {len(sounds)} sound(s), {where}"
             elif g == goals[2]:
                 how = o["vol_how"].get()
-                if how == "match":
-                    levels = {}
-                    for s in sounds:
-                        p = s.get("Settings", {}).get("path", "")
-                        if p not in levels and Path(p).is_file():
-                            status.config(text=f"Measuring {Path(p).name}...")
-                            page.update()
-                            try:
-                                levels[p] = float(np.max(db(analyze(Path(p))[1])))
-                            except Exception:
-                                pass
-                    msg = f"Loudness matched on {sd_match_loudness(sounds, levels)} sound(s)"
+                if how in ("match", "tune", "check"):
+                    heard = {}
+                    paths = {s.get("Settings", {}).get("path", "") for s in sounds}
+                    for i, p in enumerate(sorted(p for p in paths if Path(p).is_file()), 1):
+                        status.config(text=f"Listening {i}/{len(paths)}: {Path(p).name}...")
+                        page.update()
+                        try:
+                            heard[p] = sd_listen(p)
+                        except Exception:
+                            pass
+                    rows = sd_level_rows(sounds, heard, o["tune"].get())
+                    if how == "check":
+                        names = {id(s): sd_title(kpx[k]).replace("\n", " ") or k for kpx, k in targets
+                                 for s in sd_sounds(kpx[k])}
+                        status.config(text=f"Listened to {len(heard)} file(s) on {where}.")
+                        if not ui_level_report(page, rows, names, o["tune"].get()):
+                            raise LookupError  # only looked: nothing changed
+                        how = "tune"
+                    if how == "match":
+                        levels = {p: h["level"] for p, h in heard.items() if h["level"] is not None}
+                        msg = f"Loudness matched on {sd_match_loudness(sounds, levels)} sound(s), {where}"
+                    else:
+                        for r in rows:
+                            if r["new"] is not None:
+                                r["s"]["Settings"]["volume"] = r["new"]
+                        n = lambda test: sum(1 for r in rows if test(r))
+                        msg = (f"Tuned {n(lambda r: r['new'] is not None)} sound(s) to {o['tune'].get()}, {where}; "
+                               f"{n(lambda r: r['verdict'] == 'in range')} already in range"
+                               + (f"; {k} too quiet even at full volume" if (k := n(
+                                   lambda r: r['verdict'].startswith('too quiet even'))) else "")
+                               + (f"; {k} missing or silent" if (k := n(lambda r: r['now'] is None)) else ""))
                 else:
                     sd_set_sound(sounds, volume=o["vol"].get() if how == "set" else None,
                                  step=int(o["step"].get()) if how == "step" else None)
-                    msg = f"Volume changed on {len(sounds)} sound(s)"
+                    msg = f"Volume changed on {len(sounds)} sound(s), {where}"
             elif g == goals[3]:
                 sd_set_sound(sounds, output=o["output"].get())
-                msg = (f"Output set to {sd_out(o['output'].get()) or 'the default device'} on {len(sounds)} "
-                       f"sound(s) in {len(sel)} key(s)")
+                msg = (f"Output set to {sd_out_name(sd_out(o['output'].get()))} on {len(sounds)} "
+                       f"sound(s), {where}")
             elif g == goals[4]:
                 style = {}
                 if o["show"].get() != "Keep":
@@ -2106,10 +2819,10 @@ def sd_editor_tab(page):
                     style["TitleAlignment"] = o["align"].get()
                 if o["color"].get():
                     style["TitleColor"] = o["color"].get()
-                for n, k in enumerate(sel, 1):
-                    sd_label(kp[k], o["source"].get(), o["prefix"].get(), o["suffix"].get(), o["find"].get(),
+                for n, (kpx, k) in enumerate(targets, 1):
+                    sd_label(kpx[k], o["source"].get(), o["prefix"].get(), o["suffix"].get(), o["find"].get(),
                              o["repl"].get(), style, n)
-                msg = f"Renamed / restyled {len(sel)} key(s)"
+                msg = f"Renamed / restyled {where}"
             elif g == goals[5]:
                 how = o["arr"].get()
                 if how == "move":
@@ -2143,7 +2856,7 @@ def sd_editor_tab(page):
                 status.config(text="Searching...")
                 page.update()
                 fixed, still = sd_relink(sounds, o["folder"].get())
-                msg = f"Fixed {fixed} missing sound(s); {still} still missing"
+                msg = f"Fixed {fixed} missing sound(s) on {where}; {still} still missing"
         except (ValueError, LookupError) as e:
             edits.clear()
             edits.update(before[0])  # nothing half-done
@@ -2154,6 +2867,31 @@ def sd_editor_tab(page):
             return
         commit(before, msg)
 
+    def bulk_edit(keys=None):
+        """Several keys in one window (one key opens the normal Edit key window)."""
+        keys = [k for k in (keys or st["sel"]) if keys_now().get(k)]
+        if not keys:
+            return messagebox.showinfo("Edit keys", "Select the keys to edit first (Ctrl / Shift+click for several).")
+        if len(keys) == 1:
+            return edit_key(keys[0])
+        ch = ui_bulk_dialog(page, [keys_now()[k] for k in keys])
+        if not ch:
+            return
+        before = snap()
+        kp = kp_edit()
+        acts = [kp[k] for k in keys]
+        sd_set_sound([s for a in acts for s in sd_sounds(a)], ch.get("mode"), ch.get("fade"), ch.get("fade_len"),
+                     ch.get("volume"), output=ch.get("output"))
+        for a in acts:
+            if "title" in ch or ch.get("style"):
+                if not a.get("States"):
+                    a["States"] = [{}]
+                for x in a["States"]:
+                    if "title" in ch:
+                        x["Title"] = ch["title"]
+                    x.update(ch.get("style") or {})
+        commit(before, f"Edited {len(keys)} keys together")
+
     def revert():
         if edits:
             before = snap()
@@ -2161,27 +2899,39 @@ def sd_editor_tab(page):
             st["sel"] = []
             commit(before, "All unsaved changes thrown away")
 
-    def save():
-        changed = {p: d for p, d in edits.items() if d != json.loads(p.read_text(encoding="utf-8"))}
-        if not changed:
-            return status.config(text="Nothing to save.")
-        if sd_running():
-            if not messagebox.askyesno("Close Stream Deck", "Stream Deck must close while the changes are written "
-                                       "(it rewrites its profiles when it exits).\nClose it now and reopen it after?"):
-                return
-            if not sd_stop():
-                return messagebox.showerror("Stream Deck", "Couldn't close Stream Deck. Close it and press Save again.")
-        try:
-            backup = sd_save(changed, {p.parents[2] for p in changed})
-        except OSError as e:
-            return messagebox.showerror("Save", f"Couldn't write the profile:\n{e}")
-        sd_start()
-        edits.clear()
-        hist["undo"].clear()
-        hist["redo"].clear()
-        status.config(text=f"Saved {len(changed)} page(s); Stream Deck reopened. Backup: {backup}")
-        list_multis()
-        draw()
+    def save(auto=False):
+        """Send every changed page to Stream Deck: close it (it rewrites its profiles on exit and would undo
+        ours), back up, write, read back to check, reopen. auto = no question first (auto-send / app closing)."""
+        st["job"] = None
+        if st.get("saving"):  # a send is running; go again when it's done
+            st["again"] = True
+            return
+        todo = copy.deepcopy(pending())  # a snapshot: editing can carry on while it's written
+        if not todo:
+            return status.config(text="Nothing to send - Stream Deck already has every change.")
+        if not auto and sd_running() and not messagebox.askyesno(
+                "Close Stream Deck", "Stream Deck must close for a moment while the changes are written "
+                "(it rewrites its profiles when it exits).\nClose it now and reopen it after?"):
+            return
+        st["saving"] = True
+        save_btn.state(["disabled"])
+        status.config(text=f"Sending {len(todo)} page(s) to Stream Deck - it closes and reopens for a few seconds; "
+                           "you can keep working...")
+
+        def finish(res):
+            st["saving"] = False
+            save_btn.state(["!disabled"])
+            if isinstance(res, Exception):
+                status.config(text=f"Sending failed: {res}")
+                messagebox.showerror("Send to Stream Deck", str(res))
+            else:  # edits stay as they are (now equal to the files), so undo keeps working across sends
+                status.config(text=f"Sent {len(todo)} page(s) to Stream Deck and checked they were written; "
+                                   f"Stream Deck reopened. Backup: {res}")
+            refresh_lists()
+            draw()
+            if st.pop("again", False) or (auto_v.get() and pending()):
+                changed()
+        ui_background(page, lambda: sd_push(todo, {p.parents[2] for p in todo}), finish)
 
     apply_btn.config(command=apply)
     save_btn.config(command=save)
@@ -2191,11 +2941,15 @@ def sd_editor_tab(page):
     ui_keys(page, {"<Control-z>": lambda: restore("undo", "redo", "Undone."),
                    "<Control-y>": lambda: restore("redo", "undo", "Redone."), "<Control-s>": save,
                    "<Control-c>": copy_key, "<Control-v>": paste_key, "<Delete>": lambda: delete_keys(st["sel"]),
-                   "<Control-a>": lambda: select(bool), "<Escape>": lambda: select(lambda a: False)})
+                   "<Control-a>": lambda: select(bool), "<Escape>": lambda: select(lambda a: False),
+                   "<Prior>": lambda: go_page((st["idx"] or 0) - 1), "<Next>": lambda: go_page((st["idx"] or 0) + 1),
+                   "<Alt-Left>": go_back, "<Control-e>": lambda: bulk_edit(), "<Return>": lambda: bulk_edit()})
+    scope_v.trace_add("write", lambda *_: draw())
+    ptv.bind("<<TreeviewSelect>>", lambda e: ptv.selection() and go_page(int(ptv.selection()[0])))
     prof_v.trace_add("write", on_prof)
     multi_v.trace_add("write", on_multi)
-    page_v.trace_add("write", on_page)
     on_prof()
+    return {"pending": pending, "save": save, "saving": lambda: bool(st.get("saving"))}
 
 
 def streamdeck_tab(page, cfg, made):
@@ -2251,8 +3005,14 @@ def streamdeck_tab(page, cfg, made):
     tree.pack(side="left", fill="both", expand=True)
     tools = ttk.Frame(box)
     tools.pack(fill="x", pady=(8, 0))
-    ttk.Label(box, text="Drag sounds onto a key to map them  -  double-click a cell to change it  -  right-click "
-                        "for more  -  Del removes", style="Hint.TLabel").pack(anchor="w", pady=(6, 0))
+    lvl = ttk.Frame(box)  # levels: listen to the files and set their volumes for my OBS levels
+    lvl.pack(fill="x", pady=(6, 0))
+    sd_set_levels(cfg.get("obs_levels"))
+    tune_v = tk.StringVar(value=sc.get("tune") if sc.get("tune") in SD_TUNE else SD_AUTO)
+    auto_tune = tk.BooleanVar(value=sc.get("auto_tune", False))
+    ttk.Label(box, text="Drag sounds onto a key to map them  -  Ctrl/Shift+click several rows, then double-click a "
+                        "cell to change them all  -  right-click for more", style="Hint.TLabel").pack(anchor="w",
+                                                                                         pady=(6, 0))
 
     # deck
     kgrid = DeckGrid(deckf, lambda p: tile(p), on_click=lambda p, e: pick_key(one(p)),
@@ -2309,7 +3069,7 @@ def streamdeck_tab(page, cfg, made):
         for i, s in enumerate(sounds):
             tree.insert("", "end", iid=str(i), values=(s["title"], s["key"] or "auto", s["mode"],
                         s["fade"] + (f" {s['fade_len']}s" if s["fade"] != SD_FADES[0] else ""),
-                        s["volume"], sd_out(s["output"]) or "default", s["path"]))
+                        s["volume"], sd_out_name(sd_out(s["output"])), s["path"]))
         tree.selection_set([i for i in sel if tree.exists(i)])
         draw()
 
@@ -2383,19 +3143,56 @@ def streamdeck_tab(page, cfg, made):
         show()
         status.config(text=f"Keys {a} and {b} swapped.")
 
+    def level_rows(ss):
+        """Listen to these sounds and work out their volumes for my OBS levels (sd_level_rows on stand-ins)."""
+        heard, paths = {}, sorted({str(s["path"]) for s in ss if Path(s["path"]).is_file()})
+        for i, p in enumerate(paths, 1):
+            status.config(text=f"Listening {i}/{len(paths)}: {Path(p).name}...")
+            page.update()
+            try:
+                heard[p] = sd_listen(p)
+            except Exception:
+                pass
+        stand = [{"Settings": {"path": str(s["path"]), "volume": int(s["volume"])}} for s in ss]
+        return sd_level_rows(stand, heard, tune_v.get()), stand
+
+    def tune(ss, rows):
+        for s, r in zip(ss, rows):
+            if r["new"] is not None:
+                s["volume"] = r["new"]
+        n = lambda test: sum(1 for r in rows if test(r))
+        return (f"tuned {n(lambda r: r['new'] is not None)} to {tune_v.get()} ({sd_levels_text()}); "
+                f"{n(lambda r: r['verdict'] == 'in range')} already in range"
+                + (f"; {k} too quiet even at full volume" if (k := n(lambda r: r['verdict'].startswith('too quiet even')))
+                   else "") + (f"; {k} silent or unreadable" if (k := n(lambda r: r['now'] is None)) else ""))
+
+    def check_levels():
+        ss = [sounds[i] for i in picked()] or sounds
+        if not ss:
+            return messagebox.showinfo("Check levels", "Add sounds first (Add files / Add folder).")
+        rows, stand = level_rows(ss)
+        status.config(text=f"Listened to {len(ss)} sound(s).")
+        if ui_level_report(page, rows, {id(x): s["title"] for x, s in zip(stand, ss)}, tune_v.get()):
+            status.config(text=f"{len(ss)} sound(s): {tune(ss, rows)}.")
+            show()
+
     def add(paths, key=""):
         have = {str(s["path"]): s for s in sounds}
-        added = 0
+        new = []
         for p in map(Path, paths):
             if str(p) in have:
                 have[str(p)]["key"] = key or have[str(p)]["key"]
             elif p.is_file():
-                sounds.append({"path": p, "title": p.stem[:20], "key": key, **{n: v[n].get() for n in
-                               ("mode", "fade", "fade_len", "volume", "output")}})  # new sounds take the editor's settings
-                added += 1
+                new.append({"path": p, "title": p.stem[:20], "key": key, **{n: v[n].get() for n in
+                            ("mode", "fade", "fade_len", "volume", "output")}})  # new sounds take the editor's settings
+        sounds.extend(new)
         show()
-        status.config(text=f"Added {added} sound(s)" + (f" to key {key}" if key else "") + ".")
-        return added
+        msg = f"Added {len(new)} sound(s)" + (f" to key {key}" if key else "")
+        if new and auto_tune.get():
+            msg += "; " + tune(new, level_rows(new)[0])
+            show()
+        status.config(text=msg + ".")
+        return len(new)
 
     def folder_sounds(title):
         f = filedialog.askdirectory(title=title)
@@ -2502,6 +3299,7 @@ def streamdeck_tab(page, cfg, made):
             return preview()
 
         def done(val):
+            rows = picked() if item in tree.selection() else [int(item)]  # every selected row
             if name == "key":
                 val = val.strip()
                 if val.lower() == "auto":
@@ -2510,15 +3308,21 @@ def streamdeck_tab(page, cfg, made):
                     sd_key(val, *deck_size())
                 except ValueError as err:
                     return messagebox.showerror("Key", str(err))
-                return assign([int(item)], val) if val else (s.update(key=""), show())
+                if val:
+                    return assign(rows, val)
+                for i in rows:
+                    sounds[i]["key"] = ""
+                return show()
             if name == "volume":
                 try:
                     val = int(val)
                     assert 0 <= val <= 100
                 except (ValueError, AssertionError):
                     return messagebox.showerror("Volume", "Volume is a whole number from 0 to 100.")
-            s["title" if name == "title" else name] = val
+            for i in rows:
+                sounds[i][name] = val
             show()
+            status.config(text=f"Changed {name} on {len(rows)} sound(s).")
         if name == "mode":
             ui_cell_edit(tree, item, col, s["mode"], done, SD_MODES)
         elif name == "fade":
@@ -2527,7 +3331,6 @@ def streamdeck_tab(page, cfg, made):
             ui_cell_edit(tree, item, col, s["output"] or SD_DEFAULT_OUT, done, sd_output_choices(), True)
         else:
             ui_cell_edit(tree, item, col, str(s[name] or ("auto" if name == "key" else "")), done)
-    tree.bind("<Double-Button-1>", edit_cell)
 
     def tree_menu(e):
         item = tree.identify_row(e.y)
@@ -2541,33 +3344,12 @@ def streamdeck_tab(page, cfg, made):
                           ("Move up", lambda: move(-1)), ("Move down", lambda: move(1)), None,
                           (f"Remove {len(sel)} sound(s)   Del", remove)])
     tree.bind("<Button-3>", tree_menu)
-    drag = {}
 
-    def tpress(e):
-        it = tree.identify_row(e.y)
-        drag.clear()
-        drag.update(x=e.x_root, y=e.y_root, item=it)
-        if it and it in tree.selection() and not e.state & 0x0005:
-            return "break"  # keep a multi-selection so it can be dragged as a group
-
-    def tmotion(e):
-        if drag.get("item") and abs(e.x_root - drag["x"]) + abs(e.y_root - drag["y"]) > 8:
-            drag["moved"] = True
-            tree.config(cursor="fleur")
-
-    def trelease(e):
-        tree.config(cursor="")
-        d = dict(drag)
-        drag.clear()
-        if d.get("moved"):
-            pos = kgrid.key_at(e.x_root, e.y_root)
-            if pos:
-                assign(picked(), one(pos))
-        elif d.get("item") and len(tree.selection()) > 1 and not e.state & 0x0005 and d["item"] in tree.selection():
-            tree.selection_set(d["item"])
-    tree.bind("<ButtonPress-1>", tpress)
-    tree.bind("<B1-Motion>", tmotion)
-    tree.bind("<ButtonRelease-1>", trelease)
+    def drop_on_key(e):  # selected sounds dragged from the list onto a key
+        pos = kgrid.key_at(e.x_root, e.y_root)
+        if pos and picked():
+            assign(picked(), one(pos))
+    ui_multi_rows(tree, edit_cell, drop_on_key)
 
     def on_device(*_):
         _, _, c, r_ = devices[k["device"].get()]
@@ -2575,7 +3357,8 @@ def streamdeck_tab(page, cfg, made):
 
     def save():
         sc.update({n: x.get() for n, x in k.items()})
-        sc.update({n: v[n].get() for n in ("mode", "fade", "fade_len", "volume", "output")}, direct=direct.get())
+        sc.update({n: v[n].get() for n in ("mode", "fade", "fade_len", "volume", "output")}, direct=direct.get(),
+                  tune=tune_v.get(), auto_tune=auto_tune.get())
 
     def send():
         if not sounds:
@@ -2592,19 +3375,21 @@ def streamdeck_tab(page, cfg, made):
                 writes = sd_install(name, (model, dev_id, *deck_size()), sounds, keys)
             except ValueError as e:
                 return messagebox.showerror("Mapping", str(e))
-            if sd_running():
-                if not messagebox.askyesno("Close Stream Deck", "Stream Deck must close to add the profile "
-                                           "(it rewrites its profiles when it exits).\nClose it now and reopen it after?"):
-                    return
-                if not sd_stop():
-                    return messagebox.showerror("Stream Deck", "Couldn't close Stream Deck. Close it and try again.")
-            try:
-                sd_save(writes, [])
-            except OSError as e:
-                return messagebox.showerror("Profile", f"Couldn't write the profile:\n{e}")
-            sd_start()
-            return status.config(text=f"Installed profile '{name}' with {len(sounds)} sound(s); Stream Deck reopened. "
-                                      "Pick it in Stream Deck's profile list.")
+            if sd_running() and not messagebox.askyesno(
+                    "Close Stream Deck", "Stream Deck must close for a moment to add the profile "
+                    "(it rewrites its profiles when it exits).\nClose it now and reopen it after?"):
+                return
+            status.config(text="Installing the profile - Stream Deck closes and reopens for a few seconds...")
+            send_btn.state(["disabled"])
+
+            def finish(res):
+                send_btn.state(["!disabled"])
+                if isinstance(res, Exception):
+                    status.config(text=f"Installing failed: {res}")
+                    return messagebox.showerror("Send to Stream Deck", str(res))
+                status.config(text=f"Installed profile '{name}' with {len(sounds)} sound(s) and checked it was "
+                                   "written; Stream Deck reopened. Pick it in Stream Deck's profile list.")
+            return ui_background(page, lambda: sd_push(writes, []), finish)
         try:
             out = sd_profile(SD_OUT / f"{safe}.streamDeckProfile", name, (model, dev_id, *deck_size()), sounds, keys)
         except ValueError as e:
@@ -2632,6 +3417,14 @@ def streamdeck_tab(page, cfg, made):
                       ("Unassign", unassign), ("Remove", remove),
                       ("Clear all", lambda: (sounds.clear(), keys.clear(), show([])))):
         ttk.Button(tools, text=text, style="Tool.TButton", command=cmd).pack(side="left", padx=(0, 4))
+    b = ttk.Button(lvl, text="Check levels...", style="Tool.TButton", command=check_levels)
+    b.pack(side="left", padx=(0, 4))
+    Tip(b, "Listen to the selected sounds (or all) and list how loud each one plays against your OBS levels; "
+           "Tune in the list sets their volumes.")
+    ttk.Combobox(lvl, textvariable=tune_v, values=list(SD_TUNE), state="readonly", width=40).pack(side="left", padx=4)
+    ttk.Button(lvl, text="My OBS levels...", style="Tool.TButton",
+               command=lambda: ui_obs_levels(page, cfg)).pack(side="left", padx=4)
+    ttk.Checkbutton(lvl, text="Tune new sounds as they're added", variable=auto_tune).pack(side="left", padx=8)
     for text, cmd in (("Add folder...", folder_to_key), ("Add files...", files_to_key),
                       ("Selected sounds here", lambda: assign(picked(), cur.get()) if picked() else
                        messagebox.showinfo("Assign", "Select sounds in the list first.")),
@@ -2639,7 +3432,8 @@ def streamdeck_tab(page, cfg, made):
         ttk.Button(kbtns, text=text, style="Tool.TButton", command=cmd).pack(side="left", padx=(0, 4), expand=True,
                                                                              fill="x")
     apply_btn.config(command=apply)
-    ttk.Button(runbar, text="Send to Stream Deck", style="Accent.TButton", command=send).pack(side="left")
+    send_btn = ttk.Button(runbar, text="Send to Stream Deck", style="Accent.TButton", command=send)
+    send_btn.pack(side="left")
     direct = tk.BooleanVar(value=sc.get("direct", SD_EXE.exists()))
     ttk.Checkbutton(runbar, text="Install directly (no import prompt; restarts Stream Deck)", variable=direct,
                     state="normal" if SD_EXE.exists() else "disabled").pack(side="left", padx=12)
@@ -2710,8 +3504,9 @@ def gui():
     nb.add(sd_page, text="Stream Deck soundboard")
     nb.add(ed_page, text="Stream Deck editor")
     made = []  # files written this session, offered to the Stream Deck tab
+    root.update()  # show the window now; reading the Stream Deck profiles below takes a few seconds
     sd_save = streamdeck_tab(sd_page, cfg, made)
-    sd_editor_tab(ed_page)
+    editor = sd_editor_tab(ed_page, cfg)
     pad = {"padx": 10, "pady": 5}
 
     # 1. Input files
@@ -3017,6 +3812,28 @@ def gui():
         pass
 
     def on_close():
+        if editor and editor["saving"]():  # a send is still running: close when it's done
+            root.title(f"Channel Mirror {VERSION} - finishing sending to Stream Deck...")
+            return root.after(300, on_close)
+        if editor and editor["pending"]():
+            n = len(editor["pending"]())
+            ans = messagebox.askyesnocancel("Stream Deck changes not sent", f"{n} edited Stream Deck page(s) haven't "
+                                            "been sent to Stream Deck yet.\n\nSend them now before closing?\n(No = "
+                                            "throw the changes away)")
+            if ans is None:
+                return
+            if ans:
+                editor["save"](auto=True)
+
+                def wait():
+                    if editor["saving"]():
+                        return root.after(300, wait)
+                    if not editor["pending"]():  # sent; on failure the error was shown and the window stays
+                        close_now()
+                return wait()
+        close_now()
+
+    def close_now():
         sd_save()
         cfg["geometry"] = root.geometry() if root.state() == "normal" else cfg.get("geometry", "")
         cfg["tab"] = nb.index(nb.select())
@@ -3218,6 +4035,37 @@ def selftest():
         lv = {s["Settings"]["path"]: v for s, v in zip(allsnd, (-10.0, -20.0, -20.0, -26.0))}
         assert sd_match_loudness(allsnd, lv) == 4
         assert [s["Settings"]["volume"] for s in allsnd] == [16, 50, 50, 100]  # -16 dB, -6 dB, -6 dB; quietest (-26 dB) plays at full
+        sd_match_loudness(allsnd, lv, SD_LEVELS["effect"])
+        assert [s["Settings"]["volume"] for s in allsnd] == [32, 100, 100, 100]  # -10 dB file -> -10 dB; -26 dB can't be boosted
+        # listening: silence ignored, loudest channel used, kind detected; tuning by kind, within 2 dB left alone
+        a20 = 10 ** (-20 / 20) * np.sqrt(3)  # uniform noise of RMS -20 dBFS
+        ph = "2*PI*(150*t-40/(2*PI*0.7)*cos(2*PI*0.7*t))"  # a voice-like buzz gliding 110-190 Hz, in syllables
+        buzz = "+".join(f"sin({k}*{ph})/{k}" for k in range(1, 6))
+        gen = {"fx.wav": f"aevalsrc='{a20}*(2*random(0)-1)*lt(t,1)|{a20 / 10}*(2*random(1)-1)*lt(t,1)':d=4",
+               "vo.wav": f"aevalsrc='0.3*({buzz})*gt(sin(2*PI*3*t),-0.3)':d=3",
+               "bed.wav": "aevalsrc='0.08*sin(2*PI*440*t)':d=35"}
+        for name, src in gen.items():
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", src + ":s=44100", str(Path(d) / name)],
+                           check=True, creationflags=NO_WINDOW)
+        h = {n: sd_listen(Path(d) / n) for n in gen}
+        assert abs(h["fx.wav"]["level"] + 20) < 0.5 and h["fx.wav"]["kind"] == "effect", h["fx.wav"]  # not -26 (silence)
+        assert h["vo.wav"]["kind"] == "voice" and h["bed.wav"]["kind"] == "music / ambience", h
+        snd = [sd_play(Path(d) / n, n) for n in gen] + [sd_play(Path(d) / "gone.wav", "gone")]
+        heard = {str(Path(d) / n): v for n, v in h.items()}
+        snd[1]["Settings"]["volume"] = round(100 * 10 ** ((-16.5 - h["vo.wav"]["level"]) / 20))  # plays at -16.5: in range
+        rows = sd_level_rows(snd, heard)
+        assert [r["target"] for r in rows] == [-20.0, -16.0, -30.0, None]
+        assert [r["verdict"].split(":")[0] for r in rows] == ["in range", "in range", "too loud", "file missing"], rows
+        bed = h["bed.wav"]["level"]  # -25 dB file -> about 56 to land on -30
+        assert rows[2]["new"] == round(100 * 10 ** ((-30 - bed) / 20)) and abs(bed + 24.9) < 0.3
+        rows = sd_level_rows(snd, heard, "Everything at my music / ambience level")  # one fixed target for all
+        assert {r["target"] for r in rows[:3]} == {-30.0} and rows[0]["new"] == 32
+        # my own OBS levels replace the defaults; bad values fall back
+        assert sd_set_levels({"voice": -12, "effect": "x", "music / ambience": 5}) == {
+            "voice": -12.0, "effect": -20.0, "music / ambience": -30.0}
+        assert sd_level_rows(snd, heard)[1]["target"] == -12.0
+        sd_set_levels(None)
+        assert SD_LEVELS == SD_OBS_DEFAULT
         sd_label(kp["1,0"], "File name", "> ", "!", "a", "A", {"FontSize": 14})
         assert kp["1,0"]["States"][0] == {"Title": "> pAd!", "FontSize": 14}
         sd_move(kp, "1,0", "0,1")  # swap
@@ -3259,11 +4107,26 @@ def selftest():
         found = sd_multis([("Page 1", p1), ("Folder: SFX", {})])
         assert [(lbl, k, sd_kind(a)) for lbl, k, a in found] == [("Page 1", "0,0", "Random x2")]
         rnd = found[0][2]
-        sd_set_sound(sd_sounds(rnd), output="Headphones (Arctis Nova Pro Wireless)")
-        assert {s["Settings"]["outputType"] for s in sd_sounds(rnd)} == {"Headphones (Arctis Nova Pro Wireless)"}
-        assert sd_keypad(p1)["1,0"]["Settings"]["outputType"] == ""  # other keys untouched
-        pages[0].write_text(json.dumps(p1))
-        assert sd_outputs(root) == ["Headphones (Arctis Nova Pro Wireless)"]
+        # Stream Deck saves the Windows endpoint id; the app shows names and saves ids
+        real = dict(sd_win_outputs())
+        _win_outputs.clear()
+        _win_outputs.update({"Test Speakers (Selftest Audio)": "{0.0.0.00000000}.{11111111-2222-3333-4444-555555555555}"})
+        try:
+            sd_set_sound(sd_sounds(rnd), output="Test Speakers (Selftest Audio)")
+            tid = "{0.0.0.00000000}.{11111111-2222-3333-4444-555555555555}"
+            assert {s["Settings"]["outputType"] for s in sd_sounds(rnd)} == {tid}
+            assert sd_out_name(tid) == "Test Speakers (Selftest Audio)" and sd_out_name("") == "default"
+            assert sd_out(tid) == tid and sd_out_name("{0.0.0.00000000}.{gone}") == "{0.0.0.00000000}.{gone}"
+            assert sd_keypad(p1)["1,0"]["Settings"]["outputType"] == ""  # other keys untouched
+            pages[0].write_text(json.dumps(p1))
+            assert sd_outputs(root) == [tid]
+            assert sd_output_choices()[:2] == [SD_DEFAULT_OUT, "Test Speakers (Selftest Audio)"]
+        finally:
+            _win_outputs.clear()
+            _win_outputs.update(real)
+        # the format Stream Deck itself saved for this PC's devices, where present
+        for name, iid in real.items():
+            assert iid.startswith("{0.0.0.") and iid == iid.lower() and sd_out(name) == iid, (name, iid)
         sd_set_sound(sd_sounds(rnd), output=SD_DEFAULT_OUT)  # "default" in the dropdown = blank in the profile
         assert {s["Settings"]["outputType"] for s in sd_sounds(rnd)} == {""} and sd_out(" x ") == "x"
 
