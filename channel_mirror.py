@@ -509,11 +509,33 @@ def route(src, dst, info, ch, target, mode="same", seconds=None, loop=False, sta
     raise RuntimeError(f"ffmpeg failed writing {Path(dst).name}:\n{r.stderr.strip()[-500:]}")
 
 
+def natural(p):
+    """Sort key for file names in Explorer's order: track2 before track10, case ignored."""
+    import re
+    return [int(t) if t.isdecimal() else t.lower() for t in re.split(r"(\d+)", Path(p).name)]  # not isdigit: "²"
+
+
+def sound_folders(folder):
+    """[(name, sound files)] for a folder of folders: the sounds directly in it (named after it), then each
+    subfolder's sounds, in name order. Folders without sounds are left out."""
+    root = Path(folder)
+    out = []
+    for d in [root] + sorted((p for p in root.iterdir() if p.is_dir()), key=natural):
+        try:
+            fs = [q for q in media_files([d]) if q.suffix.lower() in AUDIO_EXT]
+        except OSError:  # e.g. System Volume Information under a drive root: skipped
+            continue
+        if fs:
+            out.append((d.name or d.drive or "Sounds", fs))  # a drive root has no name: "D:"
+    return out
+
+
 def media_files(paths):
-    """Files stay as given; folders become every audio/video file directly inside them."""
+    """Files stay as given; folders become every audio/video file directly inside them, in name order."""
     out = []
     for p in map(Path, paths):
-        out += sorted(q for q in p.iterdir() if q.suffix.lower() in AUDIO_EXT + VIDEO_EXT) if p.is_dir() else [p]
+        out += sorted((q for q in p.iterdir() if q.suffix.lower() in AUDIO_EXT + VIDEO_EXT), key=natural) \
+            if p.is_dir() else [p]
     return out
 
 
@@ -531,6 +553,7 @@ SD_BACKUPS = FFMPEG_DIR.parent / "Stream Deck backups"
 SD_EXE = Path(os.environ.get("ProgramFiles") or "C:/Program Files") / "Elgato" / "StreamDeck" / "StreamDeck.exe"
 SD_PLAY = "com.elgato.streamdeck.soundboard.playaudio"
 SD_STOP = "com.elgato.streamdeck.soundboard.stopaudioplay"
+SD_FOLDER, SD_PARENT = "com.elgato.streamdeck.profile.openchild", "com.elgato.streamdeck.profile.backtoparent"
 SD_SOUNDBOARD = {"Name": "Soundboard", "UUID": "com.elgato.streamdeck.soundboard", "Version": "1.0"}
 # what the sound is for -> (action, fade, fade seconds, volume or None = keep)
 SD_GOALS = {
@@ -730,18 +753,20 @@ def sd_profiles(sd_dir=SD_DIR):
     return out
 
 
-def sd_pages(folder, manifest):
+def sd_pages(folder, manifest, unsaved=None):
     """[(label, page manifest file)]: the profile's pages in Stream Deck's order ("Page 1"...), then the pages
-    behind folder keys ("Folder: <key name>"), which live beside them but aren't in the page list."""
-    pages = {p.parent.name.lower(): p for p in (folder / "Profiles").glob("*/manifest.json")}
+    behind folder keys ("Folder: <key name>"), which live beside them but aren't in the page list.
+    unsaved = {page file: json} edits not written yet (a new folder's page may not exist on disk)."""
+    unsaved = unsaved or {}
+    pages = {p.parent.name.lower(): p for p in [*(folder / "Profiles").glob("*/manifest.json"), *map(Path, unsaved)]}
     listed = [i.lower() for i in (manifest.get("Pages") or {}).get("Pages") or [] if i.lower() in pages]
     names = {}
     for p in pages.values():  # folder keys point at their page through Settings.ProfileUUID
         try:
-            for c in json.loads(p.read_text(encoding="utf-8")).get("Controllers") or []:
+            for c in (unsaved.get(p) or json.loads(p.read_text(encoding="utf-8"))).get("Controllers") or []:
                 for a in (c.get("Actions") or {}).values():
                     pid = str((a.get("Settings") or {}).get("ProfileUUID", "")).lower()
-                    if a.get("UUID") == "com.elgato.streamdeck.profile.openchild" and pid in pages:
+                    if a and a.get("UUID") == SD_FOLDER and pid in pages:
                         names[pid] = sd_title(a).replace("\n", " ") or pid[:8]
         except (OSError, ValueError, AttributeError):
             pass
@@ -968,7 +993,8 @@ def sd_label(action, source="Keep", prefix="", suffix="", find="", repl="", styl
 
 
 def sd_free(kp, cols, rows):
-    return [f"{c},{r}" for r in range(rows) for c in range(cols) if f"{c},{r}" not in kp]
+    """Keys with nothing on them, in reading order (a key saved as null / {} is empty too, as the grid shows it)."""
+    return [f"{c},{r}" for r in range(rows) for c in range(cols) if not kp.get(f"{c},{r}")]
 
 
 def sd_move(kp, src, dst):
@@ -1008,6 +1034,119 @@ def sd_split(kp, key, cols, rows):
 def sd_stop_key():
     return {"ActionID": sd_uid(), "LinkedTitle": True, "Name": "Stop Audio", "Plugin": dict(SD_SOUNDBOARD),
             "Resources": None, "Settings": {}, "State": 0, "States": [{"Title": "STOP"}], "UUID": SD_STOP}
+
+
+def sd_plays_like(files, like=None):
+    """A Play Audio action per file, named after it, with the playback settings of `like` (a Play Audio action)."""
+    se = (like or {}).get("Settings", {})
+    pick = lambda t, i: t[i] if isinstance(i, int) and 0 <= i < len(t) else t[0]
+    return [sd_play(f, Path(f).stem[:20], pick(SD_MODES, se.get("actionType")), pick(SD_FADES, se.get("fadeType")),
+                    se.get("fadeLen", 1), se.get("volume", 100), se.get("outputType", "")) for f in files]
+
+
+def sd_add_sounds(action, plays, kind="Random Action"):
+    """A key with these sounds added: a Multi / Random Action takes them at the end (same object returned); a single
+    sound becomes a <kind> holding it and then them, keeping its name and look."""
+    import copy
+    if action.get("UUID") in {u for u in SD_KINDS.values() if u}:
+        if not action.get("Actions"):
+            action["Actions"] = [{"Actions": []}]
+        action["Actions"][0].setdefault("Actions", []).extend(plays)
+        return action
+    out = sd_wrap(kind, sd_title(action), [action] + list(plays))
+    out["States"] = copy.deepcopy(action.get("States") or [{}])
+    return out
+
+
+def sd_fill(kp, plays, cols, rows, start="0,0"):
+    """One key per sound, in order, on the free keys from `start` on: left to right, then the next row down (the way
+    Stream Deck shows a page). Returns the sounds that didn't fit."""
+    free = [k for k in sd_free(kp, cols, rows) if sd_order(k) >= sd_order(start)]
+    for k, s in zip(free, plays):
+        kp[k] = s
+    return list(plays[len(free):])
+
+
+def sd_order(key):
+    """Sort key for 'col,row' keys in reading order: left to right, then the next row down."""
+    c, r = map(int, key.split(","))
+    return r, c
+
+
+def sd_beside(kp, origin, cols, rows):
+    """The free keys extra folders take: just right of `origin`, on along the rows, then from the top of the page."""
+    free = sd_free(kp, cols, rows)
+    after = [k for k in free if sd_order(k) > sd_order(origin)]
+    return after + [k for k in free if k not in after]
+
+
+def sd_folder(title, plays, cols, rows):
+    """A new Stream Deck folder: (folder key, its page id, the page json, sounds that didn't fit). The page has the
+    Parent Folder key top-left, then one key per sound in order. The page is saved as Profiles/<ID>/manifest.json."""
+    pid = sd_uid()
+    kp = {"0,0": {"ActionID": sd_uid(), "LinkedTitle": True, "Name": "Parent Folder", "Resources": None,
+                  "Settings": {}, "State": 0, "States": [{}], "UUID": SD_PARENT}}
+    left = sd_fill(kp, plays, cols, rows)
+    key = {"ActionID": sd_uid(), "LinkedTitle": True, "Name": "Create Folder",
+           "Plugin": {"Name": "Create Folder", "UUID": SD_FOLDER, "Version": "1.0"}, "Resources": None,
+           "Settings": {"ProfileUUID": pid}, "State": 0, "States": [{"Title": title}], "UUID": SD_FOLDER}
+    return key, pid, {"Controllers": [{"Actions": kp, "Type": "Keypad"}], "Icon": "", "Name": ""}, left
+
+
+def sd_clone_folders(action, pages, seen=None):
+    """Give a pasted key its own copies of the folder pages it opens (folders inside folders too), so it neither
+    shares them with the original nor points at a page another profile doesn't have. Rewrites the key's
+    Settings.ProfileUUID in place. pages = {page id: page json} of the source; returns {new page id: page json}."""
+    import copy
+    seen = {} if seen is None else seen  # old id -> its copy's id: each folder copied once, every key to it rewired
+    pid = str((action.get("Settings") or {}).get("ProfileUUID", "")).lower()
+    if action.get("UUID") != SD_FOLDER or pid not in pages:
+        return {}
+    if pid in seen:  # a second key to the same folder, or a loop back out: open the copy already made
+        action["Settings"]["ProfileUUID"] = seen[pid]
+        return {}
+    new = seen[pid] = sd_uid()  # reserved before going inside, so a loop finds it
+    page = sd_renew(copy.deepcopy(pages[pid]))
+    action["Settings"]["ProfileUUID"] = new
+    out = {new: page}
+    for c in page.get("Controllers") or []:
+        for a in (c.get("Actions") or {}).values():
+            if a:
+                out.update(sd_clone_folders(a, pages, seen))
+    return out
+
+
+def sd_reachable(roots, pages):
+    """Page ids a profile can still open: `roots` and every page reached from them through folder keys.
+    pages = {page id (lower-case): page json}."""
+    seen, todo = set(), [str(r).lower() for r in roots]
+    while todo:
+        pid = todo.pop()
+        if pid in seen or pid not in pages:
+            continue
+        seen.add(pid)
+        for c in (pages[pid] or {}).get("Controllers") or []:
+            for a in (c.get("Actions") or {}).values():
+                if a and a.get("UUID") == SD_FOLDER:
+                    todo.append(str((a.get("Settings") or {}).get("ProfileUUID", "")).lower())
+    return seen
+
+
+def sd_folders(title, plays, cols, rows, first=1, taken=()):
+    """As many new folders as the sounds need: [(folder key, page id, page json)], each page filled in order.
+    Named title, title 2, title 3...; first = the number to start at (to carry on after an existing folder),
+    taken = names already in use, skipped."""
+    if cols * rows < 2:
+        raise ValueError("A folder page needs room for at least one sound beside its Parent Folder key")
+    out, n, plays = [], first, list(plays)
+    name = lambda i: title if i == 1 else f"{title} {i}"
+    while plays or not out:
+        while name(n) in taken:
+            n += 1
+        key, pid, page, plays = sd_folder(name(n), plays, cols, rows)
+        out.append((key, pid, page))
+        n += 1
+    return out
 
 
 def sd_relink(sounds, folder):
@@ -1591,9 +1730,29 @@ def ui_level_report(parent, rows, names, preset):
     return res[0]
 
 
-def ui_new_key_dialog(parent, files):
-    """Make one key from files: pick Single / Random / Multi Action and the settings every sound gets.
-    Returns the new action, or None when cancelled."""
+def ui_pick_sounds(parent, title, folder=False, initialdir=None):
+    """Sound files the user picks, in name order (track2 before track10): several files, or with folder=True every
+    sound in one folder."""
+    from tkinter import filedialog
+    if folder:
+        f = filedialog.askdirectory(parent=parent, title=title, initialdir=initialdir)
+        return [q for q in media_files([f]) if q.suffix.lower() in AUDIO_EXT] if f else []
+    return sorted(map(Path, filedialog.askopenfilenames(parent=parent, title=title, initialdir=initialdir, filetypes=[
+        ("Audio", " ".join(f"*{e}" for e in AUDIO_EXT)), ("All files", "*.*")])), key=natural)
+
+
+def ui_grow_kind(parent):
+    """Asked before a single-sound key takes more sounds: "Random Action", "Multi Action", or None (cancelled)."""
+    from tkinter import messagebox
+    ans = messagebox.askyesnocancel("Add sounds", "This key plays one sound. Turn it into a Random Action (one random "
+                                    "sound per press)?\n\nNo = Multi Action (all play together)", parent=parent)
+    return None if ans is None else "Random Action" if ans else "Multi Action"
+
+
+def ui_new_key_dialog(parent, files, kinds=None):
+    """Make keys from files: pick what they become and the settings every sound gets. kinds = the choices
+    (default: Single sound for one file, Random / Multi Action for several; also "Folder" and "One key per sound").
+    Returns (kind, name, [Play Audio actions]), or None when cancelled."""
     import tkinter as tk
     from tkinter import ttk
     win = tk.Toplevel(parent)
@@ -1604,16 +1763,20 @@ def ui_new_key_dialog(parent, files):
     body.pack(fill="both", expand=True)
     ttk.Label(body, text="\n".join(Path(f).name for f in files[:8]) + (f"\n... and {len(files) - 8} more"
               if len(files) > 8 else ""), style="Hint.TLabel").pack(anchor="w")
-    kinds = ("Single sound",) if len(files) == 1 else ("Random Action", "Multi Action")
+    kinds = kinds or (("Single sound",) if len(files) == 1 else ("Random Action", "Multi Action"))
+    hints = {"Single sound": "plays it", "Random Action": "one random sound per press",
+             "Multi Action": "all play together", "Folder": "a folder key; inside, one key per sound in this order",
+             "One key per sound": "on the free keys, in this order",
+             "Folder per subfolder": "named after it; inside, one key per sound in name order"}
     kind = tk.StringVar(value=kinds[0])
     kf = ttk.Frame(body)
     kf.pack(fill="x", pady=(10, 0))
-    for k, hint in zip(kinds, ("plays it", ) if len(files) == 1 else ("one random sound per press",
-                                                                       "all play together")):
-        ttk.Radiobutton(kf, text=f"{k} ({hint})", variable=kind, value=k).pack(anchor="w")
-    name = tk.StringVar(value=(Path(files[0]).stem if len(files) == 1 else Path(files[0]).parent.name)[:20])
-    ttk.Label(body, text="NAME", style="Field.TLabel").pack(anchor="w", pady=(10, 0))
-    ttk.Entry(body, textvariable=name, width=24).pack(anchor="w")
+    for k in kinds:
+        ttk.Radiobutton(kf, text=f"{k} ({hints[k]})", variable=kind, value=k).pack(anchor="w")
+    name = tk.StringVar(value=(Path(files[0]).stem if kinds == ("Single sound",) else Path(files[0]).parent.name)[:20])
+    if not {"One key per sound", "Folder per subfolder"} & set(kinds):  # named after their files / folders
+        ttk.Label(body, text="NAME", style="Field.TLabel").pack(anchor="w", pady=(10, 0))
+        ttk.Entry(body, textvariable=name, width=24).pack(anchor="w")
     v = {"mode": tk.StringVar(value=SD_MODES[0]), "fade": tk.StringVar(value=SD_FADES[0]),
          "fade_len": tk.StringVar(value="1"), "volume": tk.IntVar(value=100),
          "output": tk.StringVar(value=SD_DEFAULT_OUT)}
@@ -1625,11 +1788,11 @@ def ui_new_key_dialog(parent, files):
         single = kind.get() == "Single sound"
         plays = [sd_play(Path(f), name.get() if single else Path(f).stem[:20], v["mode"].get(), v["fade"].get(),
                          v["fade_len"].get(), int(v["volume"].get()), v["output"].get()) for f in files]
-        result[0] = plays[0] if single else sd_wrap(kind.get(), name.get(), plays)
+        result[0] = (kind.get(), name.get(), plays)
         win.destroy()
     bar = ttk.Frame(body)
     bar.pack(fill="x", pady=(14, 0))
-    ttk.Button(bar, text="Create key", style="Accent.TButton", command=ok).pack(side="right")
+    ttk.Button(bar, text="Create", style="Accent.TButton", command=ok).pack(side="right")
     ttk.Button(bar, text="Cancel", command=win.destroy).pack(side="right", padx=8)
     win.bind("<Escape>", lambda e: win.destroy())
     win.grab_set()
@@ -1764,28 +1927,15 @@ def ui_key_dialog(parent, action):
                 return a["Actions"][0].setdefault("Actions", [])
             return None
 
-        def add_sounds():
-            files = filedialog.askopenfilenames(parent=win, title="Add sounds to this key", filetypes=[
-                ("Audio", " ".join(f"*{e}" for e in AUDIO_EXT)), ("All files", "*.*")])
+        def add_sounds(folder=False):
+            files = ui_pick_sounds(win, "Add every sound in a folder to this key" if folder else
+                                   "Add sounds to this key", folder)
             if not files:
                 return
-            base = (cur[0] or {}).get("Settings", {})
-            plays = [sd_play(f, Path(f).stem[:20], pick(SD_MODES, base.get("actionType")),
-                             pick(SD_FADES, base.get("fadeType")), base.get("fadeLen", 1), base.get("volume", 100),
-                             base.get("outputType", "")) for f in files]
-            lst = inner()
-            if lst is None:  # a single sound: becomes a Random or Multi Action holding it and the new ones
-                ans = messagebox.askyesnocancel("Add sounds", "This key plays one sound. Turn it into a Random Action "
-                                                "(one random sound per press)?\n\nNo = Multi Action (all play together)",
-                                                parent=win)
-                if ans is None:
-                    return
-                old = work[0]
-                work[0] = sd_wrap("Random Action" if ans else "Multi Action", sd_title(old), [old] + plays)
-                work[0]["States"] = copy.deepcopy(old.get("States") or [{}])
-            else:
-                lst.extend(plays)
-            fill(len(sd_sounds(work[0])) - 1)
+            kind = ui_grow_kind(win) if inner() is None else "Random Action"
+            if kind:  # new sounds copy the selected sound's playback settings
+                work[0] = sd_add_sounds(work[0], sd_plays_like(files, cur[0]), kind)
+                fill(len(sd_sounds(work[0])) - 1)
 
         def reorder(step):
             lst, s = inner(), cur[0]
@@ -1819,7 +1969,8 @@ def ui_key_dialog(parent, action):
             sd_set_sound(sd_sounds(work[0]), v["mode"].get(), v["fade"].get(), v["fade_len"].get(),
                          int(v["volume"].get()), output=v["output"].get())
             fill(int(tv.selection()[0]) if tv.selection() else 0)
-        for text, cmd in (("Add sounds...", add_sounds), ("Apply to all sounds", apply_all),
+        for text, cmd in (("Add sounds...", add_sounds), ("Add folder...", lambda: add_sounds(True)),
+                          ("Apply to all sounds", apply_all),
                           ("Remove sound", lambda: reorder(0)),
                           ("Move up", lambda: reorder(-1)), ("Move down", lambda: reorder(1))):
             ttk.Button(btns, text=text, style="Tool.TButton", command=cmd).pack(side="left", padx=(0, 6))
@@ -2010,7 +2161,7 @@ def sd_editor_tab(page, cfg):
     edits = {}  # page manifest path -> edited json (unsaved)
     st = {"pages": [], "named": [], "idx": None, "page": None, "sel": [], "back": []}
     hist = {"undo": [], "redo": [], "clip": None}
-    FOLDER, PARENT = "com.elgato.streamdeck.profile.openchild", "com.elgato.streamdeck.profile.backtoparent"
+    FOLDER, PARENT = SD_FOLDER, SD_PARENT
 
     # toolbar
     bar = ttk.Frame(page, padding=(10, 10, 10, 4))
@@ -2109,7 +2260,8 @@ def sd_editor_tab(page, cfg):
         a = keys_now().get(pos)
         c, r_ = map(int, pos.split(","))
         if not a:
-            return f"Empty key {c + 1},{r_ + 1}\nDouble-click to add a sound key; right-click for more."
+            return (f"Empty key {c + 1},{r_ + 1}\nDouble-click to add a sound key; right-click for a new folder of "
+                    "sounds, or to fill the free keys from here in order.")
         lines = [f"Key {c + 1},{r_ + 1}: {sd_title(a).replace(chr(10), ' ') or '(no name)'}  -  {sd_kind(a)}"]
         for s in sd_sounds(a)[:10]:
             se = s.get("Settings", {})
@@ -2183,7 +2335,8 @@ def sd_editor_tab(page, cfg):
     help_lbl.pack(fill="x", pady=(0, 8))
     holder = ttk.Frame(opts)
     holder.pack(fill="both", expand=True)
-    SCOPES = ("Selected keys", "Every sound key on this page", "Every sound key in this profile (all pages)")
+    SCOPES = ("Selected keys (a folder = every sound inside it)", "Every sound key on this page",
+              "Every sound key in this profile (all pages)")
     scope_v = tk.StringVar(value=SCOPES[0])
     arow = ttk.Frame(opts)
     arow.pack(fill="x", pady=(8, 0))
@@ -2314,19 +2467,25 @@ def sd_editor_tab(page, cfg):
     on_goal()
 
     # state helpers
+    def disk(p):
+        """The page as Stream Deck has it; None for a new folder's page that hasn't been sent yet."""
+        return json.loads(p.read_text(encoding="utf-8")) if p.is_file() else None
+
     def cur_page():
         p = st["page"]
         if p and p not in edits:
-            edits[p] = json.loads(p.read_text(encoding="utf-8"))
+            edits[p] = disk(p) or {}
         return edits.get(p)
 
     def keys_now():  # read-only view; sd_keypad() would normalise the json and make the page look edited
         ctrl = next((c for c in (cur_page() or {}).get("Controllers") or [] if c.get("Type") == "Keypad"), {})
         return ctrl.get("Actions") or {}
 
+    def dev_grid():
+        return grids.get(profs[prof_v.get()][1].get("Device", {}).get("UUID", ""), (5, 3))
+
     def size():
-        folder, m = profs[prof_v.get()]
-        cols, rows = grids.get(m.get("Device", {}).get("UUID", ""), (5, 3))
+        cols, rows = dev_grid()
         for k in keys_now():
             c, r_ = map(int, k.split(","))
             cols, rows = max(cols, c + 1), max(rows, r_ + 1)
@@ -2342,6 +2501,7 @@ def sd_editor_tab(page, cfg):
         hist["redo"].clear()
         status.config(text=f"{msg}. " + ("Sending to Stream Deck in a moment..." if auto_v.get() else
                                          "Not sent yet - Save to Stream Deck (Ctrl+S) sends it; Ctrl+Z undoes it."))
+        reload_pages()
         refresh_lists()
         draw()
         changed()
@@ -2355,9 +2515,35 @@ def sd_editor_tab(page, cfg):
         edits.update(e)
         st["sel"] = sel
         status.config(text=msg)
+        reload_pages()
         refresh_lists()
         draw()
         changed()
+
+    def reload_pages():
+        """Page list again after an edit: a new folder's page appears (unsent), an undone one goes."""
+        folder, m = profs[prof_v.get()]
+        # a new folder's page whose key was deleted or replaced before sending (and the folders inside it): nothing
+        # can open it any more, so it isn't sent. Undo brings it back with its key.
+        new = [p for p in edits if p.parents[2] == folder and not p.is_file()]
+        if new:
+            every = {p.parent.name.lower(): p for p in [*(folder / "Profiles").glob("*/manifest.json"), *new]}
+
+            def read(p):
+                try:
+                    return page_json(p)
+                except (OSError, ValueError):
+                    return {}
+            live = sd_reachable([i for i, p in every.items() if p.is_file()], {i: read(p) for i, p in every.items()})
+            for p in new:
+                if p.parent.name.lower() not in live:
+                    del edits[p]
+        st["named"] = sd_pages(folder, m, {p: d for p, d in edits.items() if p.parents[2] == folder})
+        st["pages"] = [p for _, p in st["named"]]
+        if st["page"] in st["pages"]:
+            st["idx"] = st["pages"].index(st["page"])
+        else:  # callers redraw the lists next
+            st.update(idx=0 if st["pages"] else None, page=st["pages"][0] if st["pages"] else None, sel=[])
 
     def changed():
         """With auto-send on, send to Stream Deck shortly after the last change (one restart per burst of edits)."""
@@ -2369,7 +2555,7 @@ def sd_editor_tab(page, cfg):
 
     def pending():
         """Pages whose edits haven't reached Stream Deck yet: {page file: json}."""
-        return {p: d for p, d in edits.items() if d != json.loads(p.read_text(encoding="utf-8"))}
+        return {p: d for p, d in edits.items() if d != disk(p)}
 
     def kp_edit():
         return sd_keypad(cur_page())
@@ -2427,15 +2613,14 @@ def sd_editor_tab(page, cfg):
     def on_prof(*_):
         if prof_v.get() not in profs:
             return
-        folder, m = profs[prof_v.get()]
-        st["named"] = sd_pages(folder, m)
-        st["pages"] = [p for _, p in st["named"]]
         st.update(idx=None, page=None, sel=[], back=[])
+        reload_pages()
+        st.update(idx=None, page=None)  # go_page(0) below opens the first page
         refresh_lists()
         go_page(0)
 
     def page_json(p):
-        return edits.get(p) or json.loads(p.read_text(encoding="utf-8"))
+        return edits.get(p) or disk(p) or {}
 
     def page_keys(p):
         ctrl = next((c for c in page_json(p).get("Controllers") or [] if c.get("Type") == "Keypad"), {})
@@ -2450,7 +2635,7 @@ def sd_editor_tab(page, cfg):
         ptv.delete(*ptv.get_children())
         for i, (name, p) in enumerate(st["named"]):
             k, snd, miss = page_stats(p)
-            edited = p in edits and edits[p] != json.loads(p.read_text(encoding="utf-8"))
+            edited = p in edits and edits[p] != disk(p)
             ptv.insert("", "end", iid=str(i), values=(name + (" *" if edited else ""), k, snd, miss or ""),
                        tags=(("missing",) if miss else ()) + (("edited",) if edited else ()))
         if st["idx"] is not None:
@@ -2463,8 +2648,8 @@ def sd_editor_tab(page, cfg):
             return draw()
         i = max(0, min(int(i), len(st["named"]) - 1))
         if i != st["idx"]:
-            if remember and st["idx"] is not None:
-                st["back"].append(st["idx"])
+            if remember and st["page"] is not None:
+                st["back"].append(st["page"])  # a page, not its index: new folders shift the indexes
             st.update(idx=i, page=st["named"][i][1], sel=[])
         if ptv.selection() != (str(i),):  # re-selecting fires <<TreeviewSelect>> -> go_page again: an endless loop
             ptv.selection_set(str(i))
@@ -2491,7 +2676,8 @@ def sd_editor_tab(page, cfg):
         status.config(text=f"Opened {st['named'][i][0]}. Back (Alt+Left) or the Parent Folder key returns.")
 
     def go_back():
-        i = st["back"].pop() if st["back"] else parent_of_page()
+        p = st["back"].pop() if st["back"] else None
+        i = st["pages"].index(p) if p in st["pages"] else parent_of_page()
         if i is not None:
             go_page(i)
 
@@ -2541,16 +2727,185 @@ def sd_editor_tab(page, cfg):
             commit(before, f"Edited key {pos_label(pos)}")
 
     def new_key(pos):
-        files = filedialog.askopenfilenames(title=f"Sound(s) for key {pos_label(pos)}", filetypes=[
-            ("Audio", " ".join(f"*{e}" for e in AUDIO_EXT)), ("All files", "*.*")],
-            initialdir=cfg.get("out_dir") or None)  # where Channel Mirror saved its generated files
-        act = ui_new_key_dialog(page, files) if files else None
-        if not act:
+        files = ui_pick_sounds(page, f"Sound(s) for key {pos_label(pos)}",
+                               initialdir=cfg.get("out_dir") or None)  # where Channel Mirror saved its generated files
+        got = ui_new_key_dialog(page, files) if files else None
+        if not got:
             return
+        kind, name, plays = got
         before = snap()
-        kp_edit()[pos] = act
+        kp_edit()[pos] = plays[0] if kind == "Single sound" else sd_wrap(kind, name, plays)
         st["sel"] = [pos]
         commit(before, f"New sound key at {pos_label(pos)}")
+
+    def add_to_key(pos, folder=False):
+        """More sounds on a sound / Random / Multi key; they copy its first sound's playback settings."""
+        a = keys_now().get(pos)
+        files = ui_pick_sounds(page, f"{'A folder of sounds' if folder else 'Sounds'} to add to key {pos_label(pos)}",
+                               folder)
+        kind = (ui_grow_kind(page) if a.get("UUID") == SD_PLAY else "Random Action") if files else None
+        if not kind:
+            return
+        before = snap()
+        kp_edit()[pos] = sd_add_sounds(kp_edit()[pos], sd_plays_like(files, sd_sounds(a)[0] if sd_sounds(a) else None),
+                                       kind)
+        st["sel"] = [pos]
+        commit(before, f"Added {len(files)} sound(s) to key {pos_label(pos)} ({sd_kind(kp_edit()[pos])})")
+
+    def fit(files, free, where):
+        """The files that fit in `free` places, after asking when some don't; [] = cancelled."""
+        if len(files) <= free or (free and messagebox.askyesno(
+                "Not enough keys", f"{where} has room for {free} of these {len(files)} sounds.\n"
+                f"Add the first {free} ({Path(files[0]).name} ... {Path(files[free - 1]).name})?")):
+            return files[:free]
+        if not free:
+            messagebox.showinfo("Not enough keys", f"{where} has no room for more sounds.")
+        return []
+
+    def folder_page(a):
+        """The page file a folder key opens (None if it isn't in this profile)."""
+        pid = str((a.get("Settings") or {}).get("ProfileUUID", "")).lower()
+        return next((p for p in st["pages"] if p.parent.name.lower() == pid), None)
+
+    def folder_names():
+        """Names of the folder keys on this page, which new folders must not repeat."""
+        return {sd_title(b) for b in keys_now().values() if b and b.get("UUID") == FOLDER}
+
+    def add_folders(chunks, spots):
+        """New folders (from sd_folders) onto these keys of this page, their pages into the unsent edits."""
+        for spot, (key, pid, pg) in zip(spots, chunks):
+            edits[profs[prof_v.get()][0] / "Profiles" / pid.upper() / "manifest.json"] = pg
+            kp_edit()[spot] = key
+        return spots[:len(chunks)]
+
+    def inside(pairs, seen=None):
+        """[(keypad, key)] with each folder key swapped for every sound key inside it (folders in folders too).
+        Loads those pages into the edits, so an undo covers them."""
+        seen = set() if seen is None else seen
+        out = []
+        for kp, k in pairs:
+            a = kp[k]
+            if a.get("UUID") != FOLDER:
+                out.append((kp, k))
+                continue
+            p = folder_page(a)
+            if p is None or p in seen:
+                continue
+            seen.add(p)
+            if p not in edits:
+                edits[p] = disk(p) or {}
+            # read-only lookup: sd_keypad() would add an empty keypad to a bare page and make it look edited
+            sub = next((c for c in edits[p].get("Controllers") or [] if c.get("Type") == "Keypad"), {}).get(
+                "Actions") or {}
+            out += inside([(sub, x) for x, b in sub.items() if b and (sd_sounds(b) or b.get("UUID") == FOLDER)],
+                          seen)
+        return out
+
+    def fill_page(target, start, folder, where):
+        """Sounds onto a page (this one, or a folder key's), one key each, on the free keys from `start` in order."""
+        files = ui_pick_sounds(page, f"{'A folder of sounds' if folder else 'Sounds'} for {where}", folder)
+        if not files:
+            return
+        cols, rows = dev_grid()
+        if target == st["page"]:
+            cols, rows = size()
+        kp = sd_keypad(copy.deepcopy(page_json(target)))
+        files = fit(files, len(files) - len(sd_fill(kp, files, cols, rows, start)), where)
+        got = ui_new_key_dialog(page, files, ("One key per sound",)) if files else None
+        if not got:
+            return
+        before = snap()
+        if target not in edits:
+            edits[target] = disk(target) or {}
+        sd_fill(sd_keypad(edits[target]), got[2], cols, rows, start)
+        commit(before, f"Added {len(files)} sound key(s) to {where}, in order")
+
+    def fill_folder(pos, folder=False):
+        """Sounds into a folder key's page, one key each in order; what doesn't fit carries over into new folders
+        (title 2, title 3...) just beside it, or on the next free keys of this page."""
+        a = keys_now()[pos]
+        title = sd_title(a).replace("\n", " ").strip() or "Sounds"
+        target = folder_page(a)
+        if target is None:
+            return status.config(text="That folder's page isn't in this profile.")
+        files = ui_pick_sounds(page, f"{'A folder of sounds' if folder else 'Sounds'} for folder '{title}'", folder)
+        if not files:
+            return
+        cols, rows = dev_grid()
+        room = len(sd_free(sd_keypad(copy.deepcopy(page_json(target))), cols, rows))
+        spots = sd_beside(keys_now(), pos, *size())
+        files = fit(files, room + max(0, cols * rows - 1) * len(spots), f"Folder '{title}' and the free keys beside it")
+        got = ui_new_key_dialog(page, files, ("One key per sound",)) if files else None
+        if not got:
+            return
+        before = snap()
+        if target not in edits:
+            edits[target] = disk(target) or {}
+        rest = sd_fill(sd_keypad(edits[target]), got[2], cols, rows)
+        made = add_folders(sd_folders(title, rest, cols, rows, 2, folder_names()), spots) if rest else []
+        st["sel"] = [pos] + made
+        commit(before, f"Added {len(files)} sound(s) to folder '{title}'" + (
+            f"; {len(rest)} carried over into {len(made)} new folder(s) at key(s) "
+            f"{', '.join(map(pos_label, made))}" if made else ""))
+
+    def folder_per_subfolder(pos):
+        """Mass import from a folder of folders: a Stream Deck folder per subfolder (and one for sounds loose in the
+        picked folder), named after it; full ones carry over into "<name> 2"... Placed from this key, each one
+        beside the last, or on the next free keys."""
+        d = filedialog.askdirectory(parent=page, title="A folder of sound folders - one Stream Deck folder each")
+        groups = sound_folders(d) if d else []
+        if d and not groups:
+            return messagebox.showinfo("Import", "No sound files in that folder or its subfolders.")
+        cols, rows = dev_grid()
+        if not groups:
+            return
+        if cols * rows < 2:
+            return messagebox.showinfo("Import", "This deck has no room in a folder beside its Parent Folder key.")
+        cap = cols * rows - 1
+        spots = [pos] + sd_beside({**keys_now(), pos: True}, pos, *size())
+        need = sum(-(-len(fs) // cap) for _, fs in groups)
+        if need > len(spots) and not messagebox.askyesno(
+                "Not enough keys", f"These {sum(len(fs) for _, fs in groups)} sounds need {need} folders ({cap} "
+                f"sounds each); this page has room for {len(spots)}.\nMake the first {len(spots)}?"):
+            return
+        got = ui_new_key_dialog(page, [f for _, fs in groups for f in fs], ("Folder per subfolder",))
+        if not got:
+            return
+        plays, taken, chunks = list(got[2]), folder_names(), []
+        for name, fs in groups:
+            mine, plays = plays[:len(fs)], plays[len(fs):]
+            chunks += sd_folders(name[:20], mine, cols, rows, taken=taken)
+            taken |= {sd_title(k) for k, _, _ in chunks}
+        before = snap()
+        made = add_folders(chunks, spots)
+        placed = sum(1 for _, _, pg in chunks[:len(made)] for a in sd_keypad(pg).values() if a["UUID"] == SD_PLAY)
+        left = len(got[2]) - placed
+        st["sel"] = made
+        commit(before, f"{len(made)} new folder(s), {placed} sound(s), at key(s) {', '.join(map(pos_label, made))}"
+                       + (f"; {left} sound(s) didn't fit on this page and weren't added" if left else ""))
+
+    def new_folder(pos, folder=False):
+        """New folder keys from here, as many as the sounds need: the first on this key, the rest just beside it (or
+        on the next free keys). Each page: the Parent Folder key, then one key per sound in order."""
+        files = ui_pick_sounds(page, f"{'A folder of sounds' if folder else 'Sounds'} for new folder(s) at key "
+                                     f"{pos_label(pos)}", folder)
+        if not files:
+            return
+        cols, rows = dev_grid()
+        if cols * rows < 2:
+            return messagebox.showinfo("New folder", "This deck has no room in a folder beside its Parent Folder key.")
+        spots = [pos] + sd_beside({**keys_now(), pos: True}, pos, *size())
+        files = fit(files, (cols * rows - 1) * len(spots), f"This page ({cols * rows - 1} sounds per folder)")
+        got = ui_new_key_dialog(page, files, ("Folder",)) if files else None
+        if not got:
+            return
+        before = snap()
+        chunks = sd_folders(got[1].strip() or "Sounds", got[2], cols, rows, taken=folder_names())
+        made = add_folders(chunks, spots)
+        st["sel"] = made
+        commit(before, f"{len(made)} new folder(s) '{sd_title(chunks[0][0])}' at key(s) "
+                       f"{', '.join(map(pos_label, made))} with "
+                       f"{len(files)} sound(s) in order - double-click one to open it")
 
     def pos_label(pos):
         c, r_ = map(int, pos.split(","))
@@ -2566,8 +2921,20 @@ def sd_editor_tab(page, cfg):
         a = next((keys_now()[k] for k in st["sel"] if keys_now().get(k)), None)
         if a:
             hist["clip"] = copy.deepcopy(a)
+            hist["clip_pages"] = folder_tree(a, {})  # a folder key takes what's inside it along
             status.config(text=f"Copied '{sd_title(a).replace(chr(10), ' ') or sd_kind(a)}'. Select a key "
                                "(any page or profile) and paste with Ctrl+V or right-click.")
+
+    def folder_tree(a, out):
+        """{page id: page json} copies of every page a folder key leads to, folders in folders too."""
+        p = folder_page(a) if a.get("UUID") == FOLDER else None
+        if p is not None and p.parent.name.lower() not in out:
+            out[p.parent.name.lower()] = pg = copy.deepcopy(page_json(p))
+            for c in pg.get("Controllers") or []:
+                for b in (c.get("Actions") or {}).values():
+                    if b:
+                        folder_tree(b, out)
+        return out
 
     def paste_key(pos=None):
         if not hist["clip"] or not st["page"]:
@@ -2578,9 +2945,14 @@ def sd_editor_tab(page, cfg):
         if keys_now().get(pos) and not messagebox.askyesno("Paste", f"Replace key {pos_label(pos)}?"):
             return
         before = snap()
-        kp_edit()[pos] = sd_renew(copy.deepcopy(hist["clip"]))
+        act = sd_renew(copy.deepcopy(hist["clip"]))
+        pages_ = sd_clone_folders(act, hist.get("clip_pages") or {})  # the folder's own copy, in this profile
+        for pid, pg in pages_.items():
+            edits[profs[prof_v.get()][0] / "Profiles" / pid.upper() / "manifest.json"] = pg
+        kp_edit()[pos] = act
         st["sel"] = [pos]
-        commit(before, f"Pasted onto key {pos_label(pos)}")
+        commit(before, f"Pasted onto key {pos_label(pos)}" + (
+            f" with its own copy of {len(pages_)} folder page(s)" if pages_ else ""))
 
     def delete_keys(keys):
         keys = [k for k in keys if keys_now().get(k)]
@@ -2639,9 +3011,16 @@ def sd_editor_tab(page, cfg):
                                     (f"Delete {len(many)} keys   Del", lambda: delete_keys(st["sel"]))])
             return
         if a:
-            items = ([("Open folder", lambda: open_folder(pos)), None] if a.get("UUID") == FOLDER else
+            grows = a.get("UUID") == SD_PLAY or a.get("UUID") in kinds
+            items = ([("Open folder", lambda: open_folder(pos)),
+                      ("Add sound files into this folder...", lambda: fill_folder(pos)),
+                      ("Add a folder of sounds into this folder...", lambda: fill_folder(pos, True)),
+                      ("Same settings for every sound inside...", lambda: bulk_edit([pos])), None]
+                     if a.get("UUID") == FOLDER else
                      [("Go back out of the folder", go_back), None] if a.get("UUID") == PARENT else []) + [
                      ("Edit key...", lambda: edit_key(pos)),
+                     ("Add sound files to this key...", (lambda: add_to_key(pos)) if grows else None),
+                     ("Add a folder of sounds to this key...", (lambda: add_to_key(pos, True)) if grows else None),
                      ("Preview sound", (lambda: preview(pos)) if sd_sounds(a) else None), None,
                      ("Copy key   Ctrl+C", copy_key), ("Paste here   Ctrl+V", (lambda: paste_key(pos))
                                                        if hist["clip"] else None), None,
@@ -2653,6 +3032,13 @@ def sd_editor_tab(page, cfg):
                      ("Delete key   Del", lambda: delete_keys(st["sel"]))]
         else:
             items = [("New sound key...", lambda: new_key(pos)),
+                     ("New folder(s) of sounds from files...", lambda: new_folder(pos)),
+                     ("New folder(s) of sounds from a folder...", lambda: new_folder(pos, True)),
+                     ("New folders, one per subfolder (mass import)...", lambda: folder_per_subfolder(pos)), None,
+                     ("Fill free keys from here with files...", lambda: fill_page(st["page"], pos, False,
+                                                                                  "this page")),
+                     ("Fill free keys from here with a folder...", lambda: fill_page(st["page"], pos, True,
+                                                                                     "this page")), None,
                      ("Add 'Stop all audio' key here", lambda: stop_key(pos)),
                      ("Paste here   Ctrl+V", (lambda: paste_key(pos)) if hist["clip"] else None)]
         ui_menu(deck.frame, e, items)
@@ -2719,11 +3105,13 @@ def sd_editor_tab(page, cfg):
                 commit(before, f"Changed the file on key {pos_label(k)}")
     ui_multi_rows(details, edit_cell)
 
-    def targets_for(scope):
-        """[(keypad, key)] the tools act on: the selection, every sound key on this page, or on every page."""
+    def targets_for(scope, into=False):
+        """[(keypad, key)] the tools act on: the selection, every sound key on this page, or on every page.
+        into = a selected folder key stands for every sound key inside it (the sound tools)."""
         if scope == SCOPES[0]:
             kp = kp_edit()
-            return [(kp, k) for k in st["sel"] if kp.get(k)]
+            pairs = [(kp, k) for k in st["sel"] if kp.get(k)]
+            return inside(pairs) if into else pairs
         if scope == SCOPES[1]:
             kp = kp_edit()
             return [(kp, k) for k, a in kp.items() if a and sd_sounds(a)]
@@ -2731,7 +3119,7 @@ def sd_editor_tab(page, cfg):
         for _, p in st["named"]:
             if any(a and sd_sounds(a) for a in page_keys(p).values()):
                 if p not in edits:
-                    edits[p] = json.loads(p.read_text(encoding="utf-8"))
+                    edits[p] = disk(p) or {}
                 kp = sd_keypad(edits[p])
                 out += [(kp, k) for k, a in kp.items() if a and sd_sounds(a)]
         return out
@@ -2747,7 +3135,8 @@ def sd_editor_tab(page, cfg):
                 g == goals[5] and o["arr"].get() == "stop"):
             return messagebox.showinfo("Select keys", "Click keys on the grid (Ctrl / Shift+click for several), use "
                                        "the Select buttons, or set 'Apply to' to a whole page or the profile.")
-        targets = targets_for(scope)  # loads the pages first, so undo restores them too
+        # loads the pages first, so undo restores them too; names / arranging act on the selected keys themselves
+        targets = targets_for(scope, into=g not in goals[4:6])
         before = snap()
         kp = kp_edit()
         sel = [k for k in st["sel"] if kp.get(k)]
@@ -2756,8 +3145,10 @@ def sd_editor_tab(page, cfg):
             edits.clear()
             edits.update(before[0])
             return messagebox.showinfo("No sounds", "There are no Play Audio actions there (e.g. only hotkey "
-                                       "macros), so there's nothing to change.")
-        where = {SCOPES[0]: f"{len(targets)} selected key(s)", SCOPES[1]: f"{len(targets)} key(s) on this page",
+                                       "macros or empty folders), so there's nothing to change.")
+        deep = sum(1 for kpx, _ in targets if kpx is not kp)
+        where = {SCOPES[0]: f"{len(targets)} selected key(s)" + (f" ({deep} inside folders)" if deep else ""),
+                 SCOPES[1]: f"{len(targets)} key(s) on this page",
                  SCOPES[2]: f"{len(targets)} key(s) across the profile"}[scope]
         keep = lambda x: None if x == "Keep" else x
         try:
@@ -2872,16 +3263,17 @@ def sd_editor_tab(page, cfg):
         keys = [k for k in (keys or st["sel"]) if keys_now().get(k)]
         if not keys:
             return messagebox.showinfo("Edit keys", "Select the keys to edit first (Ctrl / Shift+click for several).")
-        if len(keys) == 1:
+        if len(keys) == 1 and keys_now()[keys[0]].get("UUID") != FOLDER:
             return edit_key(keys[0])
-        ch = ui_bulk_dialog(page, [keys_now()[k] for k in keys])
+        kp = kp_edit()
+        acts = [kp[k] for k in keys]
+        inner = [kpx[k] for kpx, k in inside([(kp, k) for k in keys]) if kpx is not kp]  # keys inside folders
+        ch = ui_bulk_dialog(page, acts + inner)
         if not ch:
             return
         before = snap()
-        kp = kp_edit()
-        acts = [kp[k] for k in keys]
-        sd_set_sound([s for a in acts for s in sd_sounds(a)], ch.get("mode"), ch.get("fade"), ch.get("fade_len"),
-                     ch.get("volume"), output=ch.get("output"))
+        sd_set_sound([s for a in acts + inner for s in sd_sounds(a)], ch.get("mode"), ch.get("fade"),
+                     ch.get("fade_len"), ch.get("volume"), output=ch.get("output"))
         for a in acts:
             if "title" in ch or ch.get("style"):
                 if not a.get("States"):
@@ -2890,7 +3282,8 @@ def sd_editor_tab(page, cfg):
                     if "title" in ch:
                         x["Title"] = ch["title"]
                     x.update(ch.get("style") or {})
-        commit(before, f"Edited {len(keys)} keys together")
+        commit(before, f"Edited {len(keys)} key(s) together" + (
+            f", and the sounds on {len(inner)} key(s) inside the folder(s)" if inner else ""))
 
     def revert():
         if edits:
@@ -2955,13 +3348,12 @@ def sd_editor_tab(page, cfg):
 def streamdeck_tab(page, cfg, made):
     """The Stream Deck sub-app. made = files the Channel Mirror tab wrote this session. Returns a save() for cfg."""
     import tkinter as tk
-    from tkinter import filedialog, messagebox, ttk
+    from tkinter import messagebox, ttk
 
     sc = cfg.setdefault("streamdeck", {})
     sounds, keys = [], {}  # keys: 'col,row' (from 1) -> {"kind", "title"}
     cur = tk.StringVar(value="1,1")  # the deck key being edited
     st = {"lay": {}}
-    audio_pat = " ".join(f"*{e}" for e in AUDIO_EXT)
     one = lambda p0: "{},{}".format(*(int(x) + 1 for x in p0.split(",")))  # grid pos (from 0) -> key (from 1)
 
     # toolbar
@@ -3195,8 +3587,7 @@ def streamdeck_tab(page, cfg, made):
         return len(new)
 
     def folder_sounds(title):
-        f = filedialog.askdirectory(title=title)
-        return [q for q in media_files([f]) if q.suffix.lower() in AUDIO_EXT] if f else []
+        return ui_pick_sounds(page, title, folder=True)
 
     def folder_to_key(pos=None):
         """Every sound in a folder onto a key as one action (Random unless already Multi)."""
@@ -3215,8 +3606,7 @@ def streamdeck_tab(page, cfg, made):
     def files_to_key(pos=None):
         pos = pos or cur.get()
         pick_key(pos)
-        files = filedialog.askopenfilenames(title=f"Sounds for key {pos}",
-                                            filetypes=[("Audio", audio_pat), ("All files", "*.*")])
+        files = ui_pick_sounds(page, f"Sounds for key {pos}")
         if files:
             add(files, pos)
             if len(files) > 1 and kind_v.get() == "Single sound":
@@ -3402,9 +3792,7 @@ def streamdeck_tab(page, cfg, made):
         except OSError:
             status.config(text=f"Stream Deck app not found. Profile saved: {out} (double-click it once installed)")
 
-    for text, cmd, tip in (("Add files...", lambda: add(filedialog.askopenfilenames(
-                                title="Select sounds", filetypes=[("Audio", audio_pat), ("All files", "*.*")])),
-                            "Pick sound files"),
+    for text, cmd, tip in (("Add files...", lambda: add(ui_pick_sounds(page, "Select sounds")), "Pick sound files"),
                            ("Add folder...", lambda: add(folder_sounds("Add every sound in folder")),
                             "Every sound file in a folder"),
                            ("Add Channel Mirror outputs", lambda: add(made) if made else messagebox.showinfo(
@@ -3848,6 +4236,7 @@ def gui():
 
 
 def selftest():
+    import copy
     import tempfile
     import wave
 
@@ -4101,6 +4490,103 @@ def selftest():
                                 "Settings": {"ProfileUUID": "abcd1234"}}
         pages[0].write_text(json.dumps(p1))
         assert [n for n, _ in sd_pages(new_dir, new_m)] == ["Page 1", "Folder: SFX"]
+
+        # adding sounds to keys that already exist, and new folders filled in order
+        assert sorted(["t10.wav", "T2.wav", "t1.wav"], key=natural) == ["t1.wav", "T2.wav", "t10.wav"]
+        assert sorted(["1²2.wav", "a.wav"], key=natural)  # superscript digits aren't numbers: no crash
+        one = sd_play(st, "st", "Loop / Stop", "Fade In", 3, 40, "")
+        more = sd_plays_like([mono, st], one)
+        assert [sd_title(x) for x in more] == ["mono", "st"]
+        assert {(x["Settings"]["actionType"], x["Settings"]["volume"]) for x in more} == {(3, 40)}
+        one["States"][0]["FontSize"] = 9
+        rk = sd_add_sounds(one, more[:1], "Random Action")  # a single sound becomes a Random Action, look kept
+        assert sd_kind(rk) == "Random x2" and rk["States"] == [{"Title": "st", "FontSize": 9}]
+        assert sd_add_sounds(rk, more[1:]) is rk and sd_kind(rk) == "Random x3"  # Random / Multi just grow
+        assert [Path(x["Settings"]["path"]).name for x in sd_sounds(rk)] == ["st.wav", "mono.wav", "st.wav"]
+        assert sd_free({"0,0": None, "1,0": {}, "0,1": one}, 2, 2) == ["0,0", "1,0", "1,1"]  # saved-empty = free
+        kp2 = {"1,0": sd_stop_key()}
+        left = sd_fill(kp2, [sd_play(st, f"s{i}") for i in range(4)], 3, 2, start="2,0")
+        assert {k: sd_title(a) for k, a in kp2.items() if a["UUID"] == SD_PLAY} == {"2,0": "s0", "0,1": "s1",
+                                                                                     "1,1": "s2", "2,1": "s3"}
+        assert left == [] and sd_fill(kp2, [one, rk], 3, 2) == [rk] and kp2["0,0"] is one  # full: the rest comes back
+        key, pid, fpage, left = sd_folder("Hits", [sd_play(st, f"h{i}") for i in range(3)], 2, 2)
+        fkp = sd_keypad(fpage)
+        assert key["UUID"] == SD_FOLDER and key["Settings"]["ProfileUUID"] == pid and sd_title(key) == "Hits"
+        assert fkp["0,0"]["UUID"] == SD_PARENT and [sd_title(fkp[k]) for k in ("1,0", "0,1", "1,1")] == [
+            "h0", "h1", "h2"] and left == []
+        assert len(sd_folder("x", [one] * 5, 2, 2)[3]) == 2  # 3 keys after the Parent Folder key
+        # more sounds than a folder holds: as many folders as needed, numbered, each page full in order
+        many = [sd_play(st, f"m{i}") for i in range(8)]
+        chain = sd_folders("Hits", many, 2, 2)
+        assert [sd_title(k) for k, _, _ in chain] == ["Hits", "Hits 2", "Hits 3"]
+        assert [sd_title(a) for _, _, pg in chain for k, a in sorted(sd_keypad(pg).items(), key=lambda x: sd_order(
+            x[0])) if a["UUID"] == SD_PLAY] == [f"m{i}" for i in range(8)]
+        assert [sd_title(k) for k, _, _ in sd_folders("SFX", many[:2], 2, 2, 4)] == ["SFX 4"]  # carrying on
+        assert [sd_title(k) for k, _, _ in sd_folders("D", many[:7], 2, 2, 2, {"D 2", "D 4"})] == [
+            "D 3", "D 5", "D 6"]  # names already on the page are skipped, every time
+        assert sd_title(sd_folders("D", many[:1], 2, 2, taken={"D"})[0][0]) == "D 2"
+        try:
+            sd_folders("x", many, 1, 1)  # a 1-key deck has no room beside the Parent Folder key
+            raise AssertionError("looped on a 1x1 deck")
+        except ValueError:
+            pass
+        # a folder of folders: its own sounds first (named after it), then each subfolder's, in name order
+        lib = Path(d) / "lib"
+        for sub, names in (("10 memes", ["z.wav"]), ("2 drums", ["k10.wav", "k2.wav"]), ("empty", []), ("", ["top.wav"])):
+            (lib / sub).mkdir(parents=True, exist_ok=True)
+            for n in names:
+                shutil.copy2(mono, lib / sub / n)
+        (lib / "empty" / "readme.txt").write_text("x")
+        assert [(n, [f.name for f in fs]) for n, fs in sound_folders(lib)] == [
+            ("lib", ["top.wav"]), ("2 drums", ["k2.wav", "k10.wav"]), ("10 memes", ["z.wav"])]
+        # pasting a folder key copies the pages it opens (folders in folders too) under new ids
+        inner_key, inner_id, inner_pg, _ = sd_folder("In", [sd_play(st, "deep")], 2, 2)
+        outer_key, outer_id, outer_pg, _ = sd_folder("Out", [sd_play(st, "top")], 2, 2)
+        sd_keypad(outer_pg)["1,1"] = inner_key
+        sd_keypad(inner_pg)["1,1"] = copy.deepcopy(outer_key)  # a loop back out: copied once, not forever
+        pasted = copy.deepcopy(outer_key)
+        made = sd_clone_folders(pasted, {outer_id: outer_pg, inner_id: inner_pg})
+        new_out = pasted["Settings"]["ProfileUUID"]
+        assert len(made) == 2 and new_out in made and new_out != outer_id and outer_key["Settings"]["ProfileUUID"] == outer_id
+        new_in = sd_keypad(made[new_out])["1,1"]["Settings"]["ProfileUUID"]
+        assert new_in in made and new_in != inner_id and sd_title(sd_keypad(made[new_in])["1,0"]) == "deep"
+        assert sd_keypad(made[new_out])["1,0"]["ActionID"] != sd_keypad(outer_pg)["1,0"]["ActionID"]  # its own keys
+        assert sd_keypad(outer_pg)["1,1"]["Settings"]["ProfileUUID"] == inner_id  # the source is left as it was
+        assert sd_clone_folders(sd_stop_key(), {}) == {} and sd_clone_folders(copy.deepcopy(outer_key), {}) == {}
+        # the loop key inside the copy points at the copy, not the original; two keys opening one folder share a copy
+        assert sd_keypad(made[new_in])["1,1"]["Settings"]["ProfileUUID"] == new_out
+        sd_keypad(outer_pg)["0,1"] = copy.deepcopy(inner_key)
+        pasted = copy.deepcopy(outer_key)
+        made = sd_clone_folders(pasted, {outer_id: outer_pg, inner_id: inner_pg})
+        kp_out = sd_keypad(made[pasted["Settings"]["ProfileUUID"]])
+        assert len(made) == 2 and kp_out["0,1"]["Settings"]["ProfileUUID"] == kp_out["1,1"]["Settings"]["ProfileUUID"]
+        # pages a profile can still open: from pages on disk through folder keys; an unreachable loop is not
+        reach = {"a": {"Controllers": [{"Type": "Keypad", "Actions": {"0,0": {"UUID": SD_FOLDER, "Settings": {
+            "ProfileUUID": "B"}}}}]}, "b": {},  # ids compared lower-case, as Stream Deck writes them
+            "x": {"Controllers": [{"Actions": {"0,0": {"UUID": SD_FOLDER, "Settings": {"ProfileUUID": "y"}}}}]},
+            "y": {"Controllers": [{"Actions": {"0,0": {"UUID": SD_FOLDER, "Settings": {"ProfileUUID": "x"}}}}]}}
+        assert sd_reachable(["a"], reach) == {"a", "b"}
+        (lib / "locked").mkdir()
+        real_iterdir = Path.iterdir
+
+        def deny(p):
+            if p.name == "locked":
+                raise PermissionError(p)
+            return real_iterdir(p)
+        Path.iterdir = deny
+        try:  # e.g. System Volume Information under a drive root: skipped, not a crash
+            assert [n for n, _ in sound_folders(lib)] == ["lib", "2 drums", "10 memes"]
+        finally:
+            Path.iterdir = real_iterdir
+        # extra folders go just beside the first one, then on along the rows, then from the top
+        assert sd_beside({"1,0": 1, "2,0": 1, "0,1": 1}, "1,0", 3, 2) == ["1,1", "2,1", "0,0"]
+        assert sd_beside({"0,0": 1}, "0,0", 3, 1) == ["1,0", "2,0"]
+        p1 = json.loads(pages[0].read_text())
+        sd_keypad(p1)["0,1"] = key
+        newp = new_dir / "Profiles" / pid.upper() / "manifest.json"
+        unsaved = {pages[0]: p1, newp: fpage}  # not on disk yet: listed from the unsaved edits
+        assert [n for n, _ in sd_pages(new_dir, new_m, unsaved)] == ["Page 1", "Folder: Hits", "Folder: SFX"]
+        assert sd_pages(new_dir, new_m, unsaved)[1][1] == newp and not newp.exists()
 
         # output device: picking a Random/Multi key sets every sound inside it; saved values are offered back
         p1 = json.loads(pages[0].read_text())

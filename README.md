@@ -105,12 +105,30 @@ Edits the buttons already in your local Stream Deck app.
    - **Key names and look**: name from the file name, folder name or a number; clear it; add text before/after; find and replace; show/hide the name; font size, position and colour.
    - **Arrange keys**: move/swap a key, combine keys into one Random or Multi Action, split them back into single keys, add a *Stop all audio* key, delete keys.
    - **Fix missing sound files**: points broken sound keys (e.g. profiles copied from another computer) at a file with the same name in a folder you choose.
+
+   With *Apply to: Selected keys*, a selected **folder key stands for every sound inside it** (folders inside folders too) for the sound tools above: presets, playback, volume (including *Match loudness* and tuning to your OBS levels), output device and fixing missing files. *Key names and look* and *Arrange keys* still act on the folder key itself.
 4. **Save to Stream Deck**: closes Stream Deck (it rewrites its profiles when it exits), backs up the touched profiles to `%LOCALAPPDATA%\ChannelMirror\Stream Deck backups\profiles-<time>.zip`, writes the changes and reopens Stream Deck. To undo a save, unzip the backup into `%APPDATA%\Elgato\StreamDeck\ProfilesV3`. *Revert unsaved* throws away changes you haven't saved.
+
+### Adding sounds and folders (editor tab, right-click a key)
+
+Picked files, and the files in a picked folder, always go in name order as Explorer shows them (`track2` before `track10`).
+
+- **A sound, Random or Multi key**: *Add sound files to this key...* / *Add a folder of sounds to this key...*. A Random or Multi Action gets the new sounds added. A single sound asks whether to become a Random Action or a Multi Action. New sounds copy the key's first sound's settings.
+- **A folder key**:
+  - *Add sound files into this folder...* / *Add a folder of sounds into this folder...* put one key per sound on the folder's free keys, in order. Sounds that don't fit **carry over into new folders** (`SFX 2`, `SFX 3`...), placed just beside the folder key, or on the next free keys of the page.
+  - *Same settings for every sound inside...* sets playback, fade, volume or output for all of them in one window.
+- **An empty key**:
+  - *New folder(s) of sounds from files... / from a folder...* make a new folder there. Its page has the Parent Folder key top-left, then one key per sound in order. If there are more sounds than a folder holds, it makes as many folders as needed, each one beside the last.
+  - *New folders, one per subfolder (mass import)...* takes a folder of folders (e.g. `Drums\`, `Voices\`, `Memes\`) and makes one Stream Deck folder per subfolder, named after it. It also makes one for the sounds sitting directly in the picked folder, and full ones carry over as above.
+  - *Fill free keys from here...* puts one key per sound on this page's free keys, starting at that key.
+- If the page runs out of keys, it asks whether to add just the first ones that fit.
+- Copying and pasting a folder key copies everything inside it, so the pasted folder is its own (also in another profile).
+- New folders show in the page list straight away, and undo removes them. A new folder deleted before you save is never written.
 
 ## Working in the app
 
 - **Keys grid** (both Stream Deck tabs): click to select; Ctrl+click to add more keys; drag one key onto another to move or swap them; double-click to edit; right-click for a menu. Hover over a key to see what's on it.
-- **Edit key window** (Stream Deck editor tab; double-click a key or right-click > Edit key): name, show/hide, font size, position, colour, and every sound on the key (file, action, fade, volume, output). You can also add sounds (a single sound becomes a Random or Multi Action), remove them or reorder them.
+- **Edit key window** (Stream Deck editor tab; double-click a key or right-click > Edit key): name, show/hide, font size, position, colour, and every sound on the key (file, action, fade, volume, output). You can also add sounds or a whole folder of sounds (a single sound becomes a Random or Multi Action), remove them or reorder them.
 - **Lists**: double-click a cell to change it in place (name, key, action, fade, volume, output). In the soundboard tab, drag sounds from the list onto a key to map them.
 - **Shortcuts**:
   - Editor tab: Ctrl+Z / Ctrl+Y undo/redo, Ctrl+S save, Ctrl+C / Ctrl+V copy/paste a key (works across pages and profiles), Del delete, Ctrl+A select all, Esc select none.
