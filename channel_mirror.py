@@ -3570,14 +3570,20 @@ def streamdeck_tab(page, cfg, made):
 
     def add(paths, key=""):
         have = {str(s["path"]): s for s in sounds}
-        new = []
+        new, mine = [], []
         for p in map(Path, paths):
             if str(p) in have:
                 have[str(p)]["key"] = key or have[str(p)]["key"]
+                mine.append(have[str(p)])
             elif p.is_file():
                 new.append({"path": p, "title": p.stem[:20], "key": key, **{n: v[n].get() for n in
                             ("mode", "fade", "fade_len", "volume", "output")}})  # new sounds take the editor's settings
-        sounds.extend(new)
+                mine.append(new[-1])
+        if key:  # a key holds its sounds in the order given (a folder's name order), also ones already in the list
+            ids = {id(s) for s in mine}
+            sounds[:] = [s for s in sounds if id(s) not in ids] + mine
+        else:
+            sounds.extend(new)
         show()
         msg = f"Added {len(new)} sound(s)" + (f" to key {key}" if key else "")
         if new and auto_tune.get():
