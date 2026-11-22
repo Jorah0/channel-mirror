@@ -89,6 +89,7 @@ Turns sounds (picked files, a folder, or what the Channel Mirror tab just wrote)
 1. **Device**: decks come from your own Stream Deck profiles. A deck that is plugged in right now is listed first as `[connected]`. Columns/Rows set the key grid.
 2. **Map keys**: click a key on the grid. Then use *Add folder to this key* (every sound in the folder goes on that one key), *Add files to this key*, or *Selected sounds -> this key*. Set the key's **Action** (Single sound / Multi Action = all play at once / Random Action = one random sound per press) and its **Key name**. Sounds with no key fill the free keys in order.
 3. **Sound settings** (per sound): name, Play / Stop, Play / Overlap, Play / Restart or Loop / Stop, fade (in/out/both, 1-5 s), volume, output device.
+   **One key per sound, in folders of N** (tick it below the sound list): instead of the key mapping, every sound gets its own key inside a folder, in list order, playing **once** or on a **loop** (or as set per sound). When a folder is full the next one is made (`name`, `name 2`...); the folder keys fill the page. *Scale volume...* multiplies the volume of the selected sounds (or all) by a percentage.
 4. **Send to Stream Deck**: with *Install directly* ticked (the default when Stream Deck is installed), the profile goes straight into Stream Deck. Stream Deck is closed and reopened, and there's no import prompt. Otherwise it writes `%LOCALAPPDATA%\ChannelMirror\Stream Deck profiles\<name>.streamDeckProfile` (audio bundled inside) and opens it. Stream Deck then asks you to import it as a new profile.
 
 ## Stream Deck editor tab
@@ -100,7 +101,7 @@ Edits the buttons already in your local Stream Deck app.
 3. Choose **what you want to do**, set the options, press **Apply** (you can apply several changes in a row):
    - **Set them up for a purpose**: one-click presets. Reaction/spammable, stinger/one-shot, toggle clip, background music loop, ambience bed, intro/outro music, voice line.
    - **Playback and fade**: Play / Stop, Play / Overlap, Play / Restart or Loop / Stop, fade type and fade length.
-   - **Volume**: set it, change it by +/-, or **Match loudness** (measures every file and turns the louder ones down to match the quietest).
+   - **Volume**: set it, change it by +/-, **scale it by %** (keeps them in proportion), or **Match loudness** (measures every file and turns the louder ones down to match the quietest).
    - **Output device**: pick a Multi or Random Action from the *Multi / Random* list (every page and folder of the profile; ones with sounds first) and set the output for every sound inside it at once. The list shows devices Stream Deck has saved itself first (exact), then this PC's playback devices.
    - **Key names and look**: name from the file name, folder name or a number; clear it; add text before/after; find and replace; show/hide the name; font size, position and colour.
    - **Arrange keys**: move/swap a key, combine keys into one Random or Multi Action, split them back into single keys, add a *Stop all audio* key, delete keys.
@@ -124,6 +125,62 @@ Picked files, and the files in a picked folder, always go in name order as Explo
 - If the page runs out of keys, it asks whether to add just the first ones that fit.
 - Copying and pasting a folder key copies everything inside it, so the pasted folder is its own (also in another profile).
 - New folders show in the page list straight away, and undo removes them. A new folder deleted before you save is never written.
+
+## Import to folders tab
+
+Puts sounds into a profile already in Stream Deck, each on its own key, in folders.
+
+1. **Sounds**: add files, a folder, or what the Channel Mirror tab just wrote. They go in name order (`track2` before `track10`).
+2. **How each key plays**: **Play once** (press again to stop) or **Loop** (repeats until pressed again), with fade, volume and output device.
+3. **Volume**: tune each sound to your OBS levels and/or scale every volume by a percentage. *Check levels...* listens to each file and shows where it would sit before anything changes.
+4. **Folders**: a name and how many sounds go in each folder (up to a full page; one key is the back key). More sounds = more folders: `name`, `name 2`, `name 3`...
+5. **Where the folders go**: pick a profile and browse its pages (folder pages too). Keys in use are grey and can't be picked, so nothing is doubled up or overwritten. Click free keys in order: folder 1, 2, 3... If you pick fewer keys than folders, the rest go on the next free keys after your last pick.
+
+**Import** adds it all as one change, which you can undo here or in the editor tab. It's sent to Stream Deck from the editor (or automatically). Right-clicking an empty key in the editor (*Import sounds into folders...*) opens this tab with that key picked.
+
+## Key mover tab
+
+Copies or moves keys of any kind between pages, profiles and devices: sounds, Multi / Random Actions, folders (with everything inside them, folders in folders too), hotkeys and other plugin actions. Custom key icons come along.
+
+1. Pick a profile and page on each side (left and right decks).
+2. Click the keys to copy or move (click again to drop one; *Select every key* takes a whole page).
+3. On the other side, click where they go: one key to start from (with *Keep their layout* they keep their shape), or a key for each, in order.
+4. **When a target key is in use**: put it on the next free key, replace what's there, or skip it. Keys that don't fit a smaller deck go on the next free keys.
+5. **Copy >>** / **Move >>** (or the other way round). Copies are independent keys (their own folder pages). Moving within one profile keeps a folder's pages; moving to another profile gives it its own copy.
+
+Changes are one undo (here or in the editor tab) and are sent to Stream Deck from the editor tab (or automatically).
+
+## Screen recorder tab
+
+Records part of a monitor to a video file.
+
+1. **Monitor**: pick the one to record. Sizes and positions are real pixels, even when monitors use different Windows scaling.
+2. **The area**: type X / Y (from the monitor's top-left), width and height, press *Whole monitor*, or *Drag the area on screen...* (a see-through layer appears on that monitor; drag the box, Esc cancels).
+3. **Outline**: a line around the area stays on screen so you can see exactly what's recorded (amber while waiting, red while recording). Clicks go straight through it, so everything underneath stays usable, and it never shows up in the video.
+4. **Floating Record / Stop button**: sits beside the area (drag it by its timer to move it), so you can start and stop without switching back to the app. It isn't recorded either.
+5. **How and where**: frames per second, show the mouse pointer or not, minimize Channel Mirror while recording, the folder to save in and the file name. Each recording is `<name> <date time>.mp4` (H.264).
+6. **Record** / **Stop**. The recordings made this session are listed below; double-click one to play it. Closing the app while recording finishes the file first.
+
+Leaving out the outline and button needs Windows 10 (version 2004) or newer.
+
+## VTube Studio backgrounds tab
+
+Puts backgrounds into VTube Studio, makes a hotkey for each, and puts a Stream Deck key for each that switches to it.
+
+1. **VTube Studio**: the install is found through Steam (or *Browse...* to its `StreamingAssets` folder). Pick the **model** that gets the hotkeys - they work while that model is loaded.
+2. **Backgrounds**: *Add files...* (one or several) or *Add folder...* (every png / jpg / mp4 directly in it, in name order). The list shows which are new and which VTube Studio already has.
+3. **Copy and set up**:
+   - copies them into VTube Studio's `Backgrounds` folder. Nothing there is overwritten: the same file is reused, and a different file with the same name goes in as `name (2)`;
+   - adds a **Change Background** hotkey for each to the model (one it already has for that background is reused). VTube Studio saves its model files when it closes, so if it's open it is closed for a moment (you're asked first), the model file is backed up to `%LOCALAPPDATA%\ChannelMirror\VTube Studio backups`, the hotkeys are written and checked, and VTube Studio is reopened;
+   - puts a **Trigger Hotkey** key for each on Stream Deck (the *VTube Studio* plugin by Cazzar), on the keys you pick on any profile and page - in-use keys are grey and can't be picked - or **in folders of N** (`name`, `name 2`...). They're one undo and are sent to Stream Deck from the editor tab (or automatically).
+
+## Link tab
+
+Send files into Channel Mirror from a link, or from another device on your home network. Whatever arrives is shown first, with where it would go; nothing is placed until you **Accept** (Decline deletes the received copies).
+
+- **Links on this PC** (`channelmirror://...`): installing Channel Mirror sets these up (or press *Set up links*). Clicking one - in a browser, Discord, a shortcut - opens Channel Mirror (or hands it to the one already open) with its files ready for a tab: Stream Deck keys (*Import to folders*), *VTube Studio backgrounds*, the *soundboard*, or *Channel Mirror* itself. *Make a link* builds one from files; links can also carry web addresses, which are downloaded. Format: `channelmirror://open?to=import|vts|soundboard|mirror&file=C:\path\sound.mp3&url=https://...`.
+- **Receive from other devices**: press *Start receiving* and open the pairing link it shows (`http://<this PC>:8765/?code=123456`) on the other device - a phone, laptop or another PC on the same network gets a page to pick files and where they go. Only devices on the home network with the code can send; only sound, video and picture files are taken. *New code* stops old links working; *Stop receiving* closes it. Windows may ask once whether Channel Mirror may use the network: allow **private** networks.
+- **Send to another device**: paste the other Channel Mirror's pairing link, pick files and where they go, *Send*.
 
 ## Working in the app
 
