@@ -82,7 +82,7 @@ def download_ffmpeg(progress=print, url=FFMPEG_ZIP, dest=FFMPEG_DIR):
 
 
 # --- self-install: the one ChannelMirror.exe is also its own installer / updater / uninstaller ---
-VERSION = "2.0"
+VERSION = "2.1"
 APP_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "Programs" / "ChannelMirror"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\ChannelMirror"
 
