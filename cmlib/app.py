@@ -41,7 +41,7 @@ from .peers import (
     peer_pack,
 )
 from .setup import app_command, setup_apply
-from .ui import Tip, ui_keys, ui_menu, ui_palette, ui_theme
+from .ui import Tip, px, ui_danger, ui_empty, ui_keys, ui_menu, ui_page, ui_palette, ui_sidebar, ui_statusbar, ui_theme
 from .ui_link import (
     ui_library,
     ui_linked_bar,
@@ -63,6 +63,32 @@ from .tab_setup import setup_tab
 from .tab_music import music_tab
 from .tab_obs import obs_tab
 from .tab_transcribe import transcribe_tab
+
+
+# the main window's pages, in the notebook's order (its tab names, which settings and tests use): one line each
+PAGES = (("Channel Mirror", "Route one audio channel to both sides, left or right, in any audio or video file."),
+         ("Stream Deck soundboard", "Turn sound files into a Stream Deck profile: a key for each sound."),
+         ("Stream Deck editor", "Edit the profiles already in the Stream Deck app: keys, sounds, folders and pages."),
+         ("Import to folders", "Give many sounds a key each, in Stream Deck folders, in one go."),
+         ("Key mover", "Copy or move keys of any kind between pages, profiles and devices."),
+         ("Screen recorder", "Record an area of a monitor to a video file."),
+         ("VTube Studio backgrounds", "Backgrounds into VTube Studio, each with a hotkey and a Stream Deck key."),
+         ("Music player", "Playlists that play here and stream into OBS, with a now-playing overlay."),
+         ("OBS", "Run OBS on this PC or a linked one: scenes, sources, audio, going live, and feeds."),
+         ("Transcribe", "What's said in videos and audio files, as a document, subtitles or text. Nothing is uploaded."),
+         ("Link", "channelmirror:// links, and files from other devices on your home network."),
+         ("Linked computers", "Two Channel Mirrors paired: work on each other's Stream Deck, OBS and files."),
+         ("Setup", "Appearance, and where Channel Mirror finds things on this PC."))
+
+
+# the sidebar: pages grouped, each with its icon; the group without a caption sits at the foot
+NAV = (("Audio", (("Channel Mirror", "mirror"), ("Music player", "music"), ("Transcribe", "transcribe"))),
+       ("Stream Deck", (("Stream Deck soundboard", "soundboard"), ("Stream Deck editor", "editor"),
+                        ("Import to folders", "import"), ("Key mover", "mover"))),
+       ("Capture", (("Screen recorder", "recorder"), ("VTube Studio backgrounds", "vts"))),
+       ("Broadcast", (("OBS", "obs"),)),
+       ("Connect", (("Link", "link"), ("Linked computers", "peers"))),
+       (None, (("Setup", "setup"),)))
 
 
 def gui():
@@ -93,44 +119,29 @@ def gui():
         return
     root.title(f"Channel Mirror {VERSION}")
     zoom = max(1.0, root.winfo_fpixels("1p") / (96 / 72))  # Windows display scaling (1.5 = 150%)
-    root.minsize(int(1100 * zoom), int(720 * zoom))  # the same usable size on every display
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
     root.geometry(cfg.get("geometry") or f"{min(sw - 80, max(1100, sw * 4 // 5))}x{min(sh - 100, max(720, sh * 6 // 7))}"
                                          f"+{sw // 20}+{sh // 40}")
 
-    # header
-    head = ttk.Frame(root, style="Header.TFrame", padding=(16, 10))
-    head.pack(fill="x")
-    try:
-        img = tk.PhotoImage(file=str(BUNDLE / "icon.png"))
-        img = img.subsample(max(1, img.width() // 36))
-        ttk.Label(head, image=img, style="Header.TLabel").pack(side="left", padx=(0, 10))
-        head.img = img
-    except tk.TclError:
-        pass
-    ttk.Label(head, text="Channel Mirror", style="HeadTitle.TLabel").pack(side="left")
-    ttk.Label(head, text=f"  v{VERSION}  -  route audio channels, build and edit Stream Deck soundboards",
-              style="HeadSub.TLabel").pack(side="left", pady=(6, 0))
-    ttk.Separator(root).pack(fill="x")
-
-    nb = ttk.Notebook(root)
-    nb.pack(fill="both", expand=True, pady=(6, 0))
-    (page, sd_page, ed_page, imp_page, mv_page, rec_page, vts_page, mus_page, obs_page, link_page, peers_page,
-     setup_page) = (ttk.Frame(nb) for _ in range(12))
-    nb.add(page, text="Channel Mirror")
-    nb.add(sd_page, text="Stream Deck soundboard")
-    nb.add(ed_page, text="Stream Deck editor")
-    nb.add(imp_page, text="Import to folders")
-    nb.add(mv_page, text="Key mover")
-    nb.add(rec_page, text="Screen recorder")
-    nb.add(vts_page, text="VTube Studio backgrounds")
-    nb.add(mus_page, text="Music player")
-    nb.add(obs_page, text="OBS")
-    tr_page = ttk.Frame(nb)
-    nb.add(tr_page, text="Transcribe")
-    nb.add(link_page, text="Link")
-    nb.add(peers_page, text="Linked computers")
-    nb.add(setup_page, text="Setup")
+    # the window: a sidebar of pages (grouped) beside the pages themselves, live state along the foot. The pages are
+    # a notebook whose tab strip is hidden: tabs keep their names and order (settings and tests use them)
+    nb = ttk.Notebook(root, style="Pages.TNotebook")
+    pages = {}  # tab text -> its page; in the notebook's order
+    for text, desc in PAGES:
+        pages[text] = ttk.Frame(nb, padding=(px(6), 0, px(6), 0))
+        nb.add(pages[text], text=text)
+        ui_page(pages[text], text, desc)
+    (page, sd_page, ed_page, imp_page, mv_page, rec_page, vts_page, mus_page, obs_page, tr_page, link_page, peers_page,
+     setup_page) = pages.values()
+    statusbar, status_put = ui_statusbar(root, ("peers", "obs", "feeds", "rec", "deck"), f"Channel Mirror {VERSION}")
+    statusbar.pack(side="bottom", fill="x")
+    ttk.Frame(root, style="Line.TFrame", height=1).pack(side="bottom", fill="x")  # hairlines, not etched
+    side = ui_sidebar(root, nb, NAV, cfg)
+    side.pack(side="left", fill="y")
+    root.update_idletasks()  # the pages keep the room they always had: the minimum width adds the sidebar's icons
+    root.minsize(int(1100 * zoom) + side.winfo_reqwidth() + 1, int(720 * zoom))
+    ttk.Frame(root, style="Line.TFrame", width=1).pack(side="left", fill="y")
+    nb.pack(side="left", fill="both", expand=True)
     made = []  # files written this session, offered to the Stream Deck tab
     root.update()  # show the window now; reading the Stream Deck profiles below takes a few seconds
     sd_save = streamdeck_tab(sd_page, cfg, made)
@@ -382,6 +393,7 @@ def gui():
     ys.pack(side="right", fill="y")
     xs.pack(side="bottom", fill="x")
     lst.pack(fill="both", expand=True)
+    ui_empty(lst, "No files yet. Add audio or video files, or a whole folder, to begin.")
 
     # 2. Settings
     sett = ttk.LabelFrame(page, text="2. Settings")
@@ -744,6 +756,29 @@ def gui():
         to_vts_tab=lambda out: vtube["add"]([out]),
         send_vts=lambda name, out: [hub["send"](pr, "vts", [out], {"apply": True})
                                     for pr in hub["peers"]() if pr["name"] == name][:1])
+
+    def live():
+        """The status bar: linked computers, OBS, feeds shared with OBS, a recording, unsent Stream Deck changes."""
+        try:
+            n, o = len(hub["peers"]()), obs["state"]
+            status_put("peers", "peers", f"{n} linked computer{'s' * (n != 1)}" if n else "No linked computers",
+                       "On" if n else "Off", lambda: nb.select(peers_page))
+            status_put("obs", "obs", *(((f"OBS on {o['peer']['name']}", "Remote") if o["peer"] else
+                                        ("OBS connected", "On") if o["client"] and o["client"].connected else
+                                        ("OBS not connected", "Off"))), lambda: nb.select(obs_page))
+            feeds = [k for k, on in (("music", music["state"]["server"]), ("soundboard", o["srv"])) if on]
+            status_put("feeds", "volume", f"Sharing {' and '.join(feeds)} with OBS" if feeds else "Nothing shared with OBS",
+                       "On" if feeds else "Off", lambda: nb.select(mus_page if "music" in feeds or not feeds else obs_page))
+            status_put("rec", "recorder", "Recording" if recorder["state"]["proc"] else None, "Bad",
+                       lambda: nb.select(rec_page))
+            un = len(editor["pending"]()) if editor else 0
+            status_put("deck", "warn" if un else "ok", None if not editor else
+                       f"{un} Stream Deck page{'s' * (un != 1)} not sent" if un else "Stream Deck up to date",
+                       "Warn" if un else "Off", lambda: nb.select(ed_page))
+        finally:
+            root.after(1000, live)
+    live()
+    ui_danger(root)
 
     names = [nb.tab(t, "text") for t in nb.tabs()]
     last = cfg.get("tab", 0)  # the tab's name; a number from 2.1 and older (their tabs had no Music player)

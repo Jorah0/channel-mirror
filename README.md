@@ -281,10 +281,12 @@ Where everything is on this PC - found by itself:
 
 ## Working in the app
 
+- **Finding your way**: the tools ("tabs" below) are listed down the left, grouped - *Audio* (Channel Mirror, Music player, Transcribe), *Stream Deck* (soundboard, editor, Import to folders, Key mover), *Capture* (Screen recorder, VTube Studio backgrounds), *Broadcast* (OBS), *Connect* (Link, Linked computers) - with *Setup* at the foot. Click one, or use Ctrl+Tab / Ctrl+Shift+Tab anywhere (Up / Down when the list has focus). A narrow window shows icons only (hover for the name); the menu button at the top does that on a wide one too.
+- **Status bar** (the foot of the window): linked computers, whether OBS is connected (or which linked computer's OBS you control), what's shared with OBS (music, soundboard feed), a recording running, and Stream Deck pages not sent yet. Click one to open its tool.
 - **Keys grid** (both Stream Deck tabs): click to select; Ctrl+click to add more keys; drag one key onto another to move or swap them; double-click to edit; right-click for a menu. Hover over a key to see what's on it.
 - **Edit key window** (Stream Deck editor tab; double-click a key or right-click > Edit key): name, show/hide, font size, position, colour, and every sound on the key (file, action, fade, volume, output). You can also add sounds or a whole folder of sounds (a single sound becomes a Random or Multi Action), remove them or reorder them.
 - **Lists**: double-click a cell to change it in place (name, key, action, fade, volume, output). In the soundboard tab, drag sounds from the list onto a key to map them.
 - **Shortcuts**:
   - Editor tab: Ctrl+Z / Ctrl+Y undo/redo, Ctrl+S save, Ctrl+C / Ctrl+V copy/paste a key (works across pages and profiles), Del delete, Ctrl+A select all, Esc select none.
   - Soundboard tab: Del removes sounds, Space previews the selected sound.
-- The window remembers its size and the last tab you used.
+- The window remembers its size, the last tool you used and whether the list on the left shows names.

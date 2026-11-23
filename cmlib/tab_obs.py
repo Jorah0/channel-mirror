@@ -17,7 +17,7 @@ from .obs import (
     obs_serve,
 )
 from .music import MusicServer, SoundFeed
-from .ui import Tip, ui_background
+from .ui import Tip, ui_background, ui_empty
 from .ui_link import ui_linked_bar
 
 OBS_NEW = "(a new source in the scene)"
@@ -115,6 +115,7 @@ def obs_tab(page, cfg, hub, music, sounds):
     r.pack(side="bottom", fill="x", pady=(4, 0))
     ttk.Button(r, text="Show / hide", style="Tool.TButton", command=lambda: toggle_item()).pack(side="left")
     srcs = ttk.Treeview(srf, columns=("src", "on"), show="headings", height=4, selectmode="browse")
+    ui_empty(srcs, "Connect to OBS to see the scene's sources.")
     for c, h, w in (("src", "Source", 180), ("on", "Shown", 70)):
         srcs.heading(c, text=h)
         srcs.column(c, width=w, stretch=c == "src")

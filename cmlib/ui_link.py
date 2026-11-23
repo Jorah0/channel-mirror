@@ -20,7 +20,7 @@ from .peers import (
     peer_pack,
     peer_proposal,
 )
-from .ui import DeckGrid, UI
+from .ui import DeckGrid, UI, px
 
 
 def peer_batches(target, spec, files, size=200):
@@ -238,9 +238,10 @@ def ui_linked_bar(page, hub, send=None, extra=(), add=None, exts=None):
     linked-computer tools (extra: (text, f(peer))), and what's going back and forth with that computer."""
     import tkinter as tk
     from tkinter import ttk
-    bar = ttk.Frame(page, padding=(12, 6, 12, 2))
-    kids = page.pack_slaves()
-    bar.pack(side="top", fill="x", **({"before": kids[0]} if kids else {}))  # at the top, and it keeps its room
+    bar = ttk.Frame(page, padding=(10, px(4), 10, px(2)))
+    head = page.children.get("head")  # the page's header (ui_page): right under it
+    kids = [k for k in page.pack_slaves() if k is not head]
+    bar.pack(side="top", fill="x", **({"after": head} if head else {"before": kids[0]} if kids else {}))
     ttk.Label(bar, text=" Working on: This PC ", style="Local.TLabel").pack(side="left")
     if add:
         ttk.Button(bar, text="From Channel Mirror...", style="Tool.TButton",
@@ -263,7 +264,7 @@ def ui_linked_bar(page, hub, send=None, extra=(), add=None, exts=None):
     def show():
         p = peer()
         note.config(text=(hub["activity"].get(p["id"]) or hub["label"](p)) if p else
-                    "No linked computers yet - link one in the Linked computers tab.")
+                    "No linked computers yet.")
 
     def refresh():
         names = [p["name"] for p in hub["peers"]()]

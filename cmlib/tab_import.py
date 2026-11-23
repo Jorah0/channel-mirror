@@ -18,7 +18,7 @@ from .deck import (
     sd_plays_like,
     sd_title,
 )
-from .ui import DeckGrid, UI, ui_level_report, ui_obs_levels, ui_pick_sounds, ui_play_choice, ui_sound_form
+from .ui import DeckGrid, UI, ui_empty, ui_level_report, ui_obs_levels, ui_pick_sounds, ui_play_choice, ui_sound_form
 
 
 def import_tab(page, cfg, made, deck):
@@ -56,6 +56,7 @@ def import_tab(page, cfg, made, deck):
     sf = ttk.LabelFrame(left, text="1. Sounds - each one gets its own key, in this order")
     sf.pack(fill="both", expand=True)
     tv = ttk.Treeview(sf, columns=("n", "file", "folder"), show="headings", height=7)
+    ui_empty(tv, "No sounds yet. Add files or a folder; each sound gets its own key.")
     for c, h, w in (("n", "#", 36), ("file", "File", 220), ("folder", "From folder", 200)):
         tv.heading(c, text=h)
         tv.column(c, width=w, stretch=c != "n")
@@ -124,7 +125,7 @@ def import_tab(page, cfg, made, deck):
     r1 = ttk.Frame(vf)
     r1.pack(fill="x")
     ttk.Checkbutton(r1, text="Tune each sound to my OBS levels:", variable=tune_on).pack(side="left")
-    ttk.Combobox(r1, textvariable=preset, values=list(SD_TUNE), state="readonly", width=38).pack(side="left", padx=6)
+    ttk.Combobox(r1, textvariable=preset, values=list(SD_TUNE), state="readonly", width=32).pack(side="left", padx=6)
     ttk.Button(r1, text="My OBS levels...", style="Tool.TButton",
                command=lambda: ui_obs_levels(win, cfg)).pack(side="left")
     r2 = ttk.Frame(vf)

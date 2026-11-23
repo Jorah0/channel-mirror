@@ -47,6 +47,7 @@ def tour():
     r.geometry(f"{W}x{H}+0+0")
     r.update()
     nb = next(w for w in walk(r) if isinstance(w, ttk.Notebook))
+    nb_names = [nb.tab(t, "text") for t in nb.tabs()]
     for t in nb.tabs():
         nb.select(t)
         r.update()
@@ -60,7 +61,19 @@ def tour():
                     found[f"{name} / {g}"] = lost(tab)
         elif lost(tab):
             found[name] = lost(tab)
-    print(cm.UI["mode"], json.dumps(found, indent=1) if found else f"{W}x{H}: every control is on screen")
+    # the sidebar: every page's item shown whole inside it (above the status bar), its own controls on screen, and
+    # page names shown on a wide window / icons only on a narrow one
+    side = r.nametowidget("sidebar")
+    bottom = side.winfo_rooty() + side.winfo_height()
+    items = [w for w in walk(side) if w.winfo_class() == "NavItem"]
+    names = [str(c.cget("text")) for w in items for c in w.winfo_children() if c.winfo_ismapped()
+             and "text" in c.keys() and str(c.cget("text")) in nb_names]
+    bad = [str(w) for w in items if not w.winfo_ismapped() or w.winfo_rooty() + w.winfo_height() > bottom]
+    wide = r.winfo_width() >= cm.px(1280)
+    if len(items) != len(nb_names) or bad or lost(side) or (sorted(names) == sorted(nb_names)) != wide:
+        found["sidebar"] = {"items": len(items), "off screen": bad, "lost": lost(side), "names shown": names}
+    print(cm.UI["mode"], json.dumps(found, indent=1) if found else
+          f"{W}x{H}: every control is on screen (sidebar: {'names' if wide else 'icons only'})")
     LOST.extend(found)
     r.destroy()
 

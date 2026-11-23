@@ -30,8 +30,8 @@ for d in sorted(HERE.glob("drive_*.py")):
                        else 600, {}))
 if not only:
     for theme in ("light", "dark"):
-        for size in (("1100", "720", "1.3333"), ("1650", "1080")):
-            checks.append((f"layout {theme} {size[0]}x{size[1]}",
+        for size in (("1100", "720", "1.3333"), ("1650", "1080"), ("1650", "1080", "1.3333")):  # 1.3333 = 100 %
+            checks.append((f"layout {theme} {size[0]}x{size[1]}{' 100%' if size[2:] else ''}",
                            [PY, "-u", str(HERE / "layout_audit.py"), str(REPO), *size], 600, {"CM_THEME": theme}))
 failed = []
 # main window only: a UI test opens the whole app (harness.App / cm.gui()) and works through its tabs and menus; it

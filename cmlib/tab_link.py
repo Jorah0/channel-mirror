@@ -40,7 +40,7 @@ from .peers import (
     peer_unlink,
     peer_until,
 )
-from .ui import Tip, UI, ui_background
+from .ui import Tip, UI, ui_background, ui_empty
 from .ui_link import peer_batches, ui_incoming, ui_library, ui_proposal
 
 
@@ -162,6 +162,7 @@ def link_tab(page, cfg, deliver, provide=None, home=None):
     link_b = ttk.Button(pr, text="Link", style="Accent.TButton", command=lambda: pair())
     link_b.pack(side="left", padx=4)
     ptv = ttk.Treeview(kf, columns=("name", "where", "until", "now"), show="headings", height=3, selectmode="browse")
+    ui_empty(ptv, "No linked computers yet. Paste the other PC's pairing link above and press Link.")
     for c, h, w in (("name", "Computer", 110), ("where", "Address", 120), ("until", "Linked until", 150),
                     ("now", "Now", 230)):
         ptv.heading(c, text=h)

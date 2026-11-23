@@ -110,11 +110,22 @@ def check_video(f, w, h, label):
 
 for n, mon in enumerate(cm.rec_monitors()):
     short = mon[0].split(":")[0]
-    ax, ay, w, h = 301, 251, 400, 300  # monitor-relative, odd offsets on purpose
-    gx, gy = mon[1] + ax, mon[2] + ay  # the same, on the desktop (real pixels)
-    pat = subprocess.Popen([sys.executable, str(HERE / "pattern_window.py"), str(gx), str(gy), str(w), str(h)],
-                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-    assert pat.stdout.readline().startswith("ready")
+    w, h = 400, 300
+    # a spot where the test pattern is really visible: another program's window (e.g. a hardware-accelerated
+    # Discord) can cover even a topmost window, so try a few places (monitor-relative, odd offsets on purpose)
+    for ax, ay in ((301, 251), (mon[3] - 751, 251), (301, mon[4] - 601), (mon[3] - 751, mon[4] - 601)):
+        gx, gy = mon[1] + ax, mon[2] + ay  # the same, on the desktop (real pixels)
+        pat = subprocess.Popen([sys.executable, str(HERE / "pattern_window.py"), str(gx), str(gy), str(w), str(h)],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        assert pat.stdout.readline().startswith("ready")
+        time.sleep(0.4)
+        if (grab(gx, gy, w, h) == pattern(w, h)).all():
+            break
+        pat.stdin.close()
+        pat.wait(10)
+    else:
+        raise AssertionError(f"{short}: every test spot is covered by another program's window - move it and re-run")
+    print(f"{short}: test spot {ax},{ay}")
     pick_monitor(mon[0])
     assert v["mon"].get() == mon[0]
 

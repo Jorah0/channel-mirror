@@ -7,33 +7,47 @@ from .deck import SD_FADES, SD_LEVELS, SD_MODES, SD_OBS_DEFAULT, sd_output_choic
 from .setup import ui_mode
 
 
-# --- UI toolkit: theme, tooltips, menus, key grid, cell editing, dialogs (stdlib tkinter only) ---
-UI_LIGHT = {"mode": "light", "bg": "#f3f4f6", "panel": "#ffffff", "border": "#d1d5db", "text": "#1f2937",
-            "muted": "#6b7280", "dis": "#9ca3af", "accent": "#2563eb", "accent2": "#1d4ed8", "on_accent": "#ffffff",
-            "accent_off": "#9db7f0", "accent_off_fg": "#eef2ff", "sound": "#d1fae5", "missing": "#fee2e2",
-            "other": "#e5e7eb", "auto": "#e0e7ff", "empty": "#ffffff", "button": "#e8ebf0", "hover": "#dde2e9",
-            "press": "#cfd5dd", "tab": "#e6e9ee", "head": "#eef0f3", "bad": "#b91c1c", "warn": "#b45309",
-            "good": "#047857", "tip": "#111827", "tip_fg": "#f9fafb",
-            "remote": "#6d28d9"}
+# --- UI toolkit: design system (colour tokens, type scale, spacing), theme, tooltips, menus, key grid, cell editing
+# Colour tokens, light and dark. Surfaces, lowest first: side (sidebar, status bar) < bg (pages) < panel (fields,
+# lists); sel = the selected sidebar item, nav_hover = a sidebar item under the mouse, stripe = every other list row.
+# line = card borders and dividers, border = control borders. Text: text, muted (secondary), dis (disabled); every
+# text colour keeps 4.5:1 contrast or more on the surfaces it's used on. One accent (accent2 = its hover / pressed);
+# good / warn / bad = success / warning / danger; remote = working on a linked computer (white text on it).
+# sound / missing / other / auto / empty = Stream Deck key tiles.
+UI_LIGHT = {"mode": "light", "side": "#eef0f3", "bg": "#f8f9fb", "panel": "#ffffff", "line": "#d9dde3",
+            "border": "#c3c8cf", "text": "#1a1c1f", "muted": "#5b6169", "dis": "#8a9099", "accent": "#0f6cbd",
+            "accent2": "#115ea3", "on_accent": "#ffffff", "accent_off": "#a9c7e6", "accent_off_fg": "#f2f7fc",
+            "sel": "#e1e7f1", "nav_hover": "#e5e8ec", "stripe": "#f6f7f9", "sound": "#dcf3e6", "missing": "#fde2e1",
+            "other": "#e8eaee", "auto": "#e2e8f7", "empty": "#ffffff", "button": "#fefefe", "hover": "#f1f3f5",
+            "press": "#e6e9ed", "tab": "#eef0f2", "head": "#f3f4f6", "bad": "#c42b1c", "warn": "#9d5d00",
+            "good": "#0f7b0f", "tip": "#1f2328", "tip_fg": "#f5f6f8", "remote": "#6d28d9"}
 
 
-UI_DARK = {"mode": "dark", "bg": "#1c1e23", "panel": "#25282e", "border": "#3d424b", "text": "#e7e9ec",
-           "muted": "#a0a8b3", "dis": "#6b7280", "accent": "#2563eb", "accent2": "#3b7af5", "on_accent": "#ffffff",
-           "accent_off": "#2b467e", "accent_off_fg": "#9fb3d9", "sound": "#1e4a39", "missing": "#5a2429",
-           "other": "#353a42", "auto": "#2f3768", "empty": "#25282e", "button": "#30343b", "hover": "#3a3f48",
-           "press": "#464c57", "tab": "#22252b", "head": "#2c3037", "bad": "#f87171", "warn": "#fbbf24",
-           "good": "#34d399", "tip": "#33373f", "tip_fg": "#f3f4f6",
-           "remote": "#7c3aed"}
+UI_DARK = {"mode": "dark", "side": "#191a1d", "bg": "#202124", "panel": "#2a2b2f", "line": "#404349",
+           "border": "#4c4f56", "text": "#ebecef", "muted": "#a3a7af", "dis": "#7c8089", "accent": "#2a73c9",
+           "accent2": "#2466b3", "on_accent": "#ffffff", "accent_off": "#2a3f5c", "accent_off_fg": "#8ea6c4",
+           "sel": "#2c323d", "nav_hover": "#232529", "stripe": "#2e2f34", "sound": "#1d4434", "missing": "#55262a",
+           "other": "#36383d", "auto": "#2c3561", "empty": "#2a2b2f", "button": "#2f3135", "hover": "#383a3f",
+           "press": "#292b2f", "tab": "#1b1c1f", "head": "#2d2f33", "bad": "#ff99a4", "warn": "#fce100",
+           "good": "#6ccb5f", "tip": "#3a3c41", "tip_fg": "#f3f4f6", "remote": "#7c3aed"}
 
 
-UI = {**UI_LIGHT, "font": ("Segoe UI", 10), "small": ("Segoe UI", 8)}  # the palette in use; ui_switch swaps it
+# the palette in use (ui_switch swaps it) + the type scale and display zoom (ui_fonts fills them in)
+UI = {**UI_LIGHT, "font": ("Segoe UI", 10), "small": ("Segoe UI", 8), "zoom": 1.0}
+
+
+# icons: glyphs of the Segoe Fluent Icons font (Segoe MDL2 Assets on Windows 10) - no image files
+ICON = {"mirror": "", "soundboard": "", "editor": "", "import": "", "mover": "",
+        "recorder": "", "vts": "", "music": "", "obs": "", "transcribe": "",
+        "link": "", "peers": "", "setup": "", "menu": "", "ok": "", "warn": "",
+        "error": "", "info": "", "volume": "", "sync": ""}
 
 
 # for a live switch: which widget options hold a background or a text colour, and the palette keys for each
 UI_RECOLOUR = {("-background", "-highlightbackground", "-highlightcolor", "-activebackground", "-selectbackground",
                 "-troughcolor", "-selectcolor", "-disabledbackground", "-readonlybackground"):
                ("bg", "panel", "border", "accent", "accent2", "sound", "missing", "other", "auto", "empty", "button",
-                "hover", "press", "tab", "head", "tip"),
+                "hover", "press", "tab", "head", "tip", "stripe"),
                ("-foreground", "-insertbackground", "-activeforeground", "-disabledforeground", "-selectforeground"):
                ("text", "muted", "dis", "bad", "warn", "good", "tip_fg")}
 
@@ -41,9 +55,31 @@ UI_RECOLOUR = {("-background", "-highlightbackground", "-highlightcolor", "-acti
 UI_SWATCH = {"relief": "flat", "bd": 0, "highlightthickness": 1}  # colour boxes: a thin border in the palette's colour
 
 
+def px(n):
+    """n pixels of the 8 px spacing grid (4, 8, 12, 16, 24...) at this display's scaling (ui_fonts measures it)."""
+    return round(n * UI["zoom"])
+
+
 def ui_palette(choice):
     """Put the Light or Dark palette for this Appearance choice into UI (before ui_theme)."""
     UI.update(UI_DARK if ui_mode(choice) == "dark" else UI_LIGHT)
+
+
+def ui_fonts(root):
+    """The type scale (Windows 11's Segoe UI Variable when installed, else Segoe UI) and the display zoom, into UI:
+    font = body, small, caption, strong = body semibold, label = form captions, section = card titles,
+    title = page titles, mono = numbers and paths, icon / icon_small = Fluent icon glyphs."""
+    from tkinter import font as tkfont
+    have = set(tkfont.families(root))
+
+    def pick(*names):
+        return next((n for n in names if n in have), names[-1])
+    text, semi = pick("Segoe UI Variable Text", "Segoe UI"), pick("Segoe UI Variable Text Semibold", "Segoe UI Semibold")
+    icon = pick("Segoe Fluent Icons", "Segoe MDL2 Assets")
+    UI.update(font=(text, 10), small=(text, 8), caption=(text, 9), strong=(semi, 10), label=(semi, 8),
+              section=(semi, 11), title=(pick("Segoe UI Variable Display Semib", "Segoe UI Semibold"), 16),
+              mono=(pick("Cascadia Mono", "Consolas"), 10), icon=(icon, 12), icon_small=(icon, 10),
+              zoom=max(1.0, root.winfo_fpixels("1p") / (96 / 72)))
 
 
 def ui_titlebar(win, redraw=False):
@@ -61,109 +97,508 @@ def ui_titlebar(win, redraw=False):
         pass
 
 
+def _png(a):
+    """RGBA uint8 array -> PNG file bytes (stdlib zlib + struct)."""
+    import struct
+    import zlib
+
+    def chunk(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+    h, w = a.shape[:2]
+    raw = b"".join(b"\0" + a[y].tobytes() for y in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def _paint(w, h, shapes):
+    """An anti-aliased RGBA image: shapes = [(sdf(x, y) -> distance, "#rrggbb"), ...] painted in order (4 x 4
+    samples a pixel; inside = distance <= 0)."""
+    import numpy as np
+    y, x = (np.mgrid[0:h * 4, 0:w * 4] + 0.5) / 4
+    rgb, alpha = np.zeros((h, w, 3)), np.zeros((h, w, 1))
+    for sdf, col in shapes:
+        a = (sdf(x, y) <= 0).reshape(h, 4, w, 4).mean((1, 3))[..., None]
+        rgb = np.array([int(col[i:i + 2], 16) for i in (1, 3, 5)]) / 255 * a + rgb * (1 - a)  # premultiplied "over"
+        alpha = a + alpha * (1 - a)
+    out = np.concatenate([rgb / np.maximum(alpha, 1e-9), alpha], 2)
+    return (out * 255 + 0.5).astype(np.uint8)
+
+
+def _box(cx, cy, hw, hh, r):
+    """Rounded rectangle: centre, half width / height, corner radius."""
+    import numpy as np
+    return lambda x, y: (np.hypot(np.maximum(abs(x - cx) - hw + r, 0), np.maximum(abs(y - cy) - hh + r, 0))
+                         + np.minimum(np.maximum(abs(x - cx) - hw + r, abs(y - cy) - hh + r), 0) - r)
+
+
+def _dot(cx, cy, r):
+    import numpy as np
+    return lambda x, y: np.hypot(x - cx, y - cy) - r
+
+
+def _tick(n, t):
+    """A check mark across an n-pixel box, t thick."""
+    import numpy as np
+    pts = [(0.28 * n, 0.52 * n), (0.43 * n, 0.67 * n), (0.73 * n, 0.36 * n)]
+
+    def sdf(x, y):
+        d = None
+        for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+            h = np.clip(((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / ((bx - ax) ** 2 + (by - ay) ** 2), 0, 1)
+            e = np.hypot(x - ax - h * (bx - ax), y - ay - h * (by - ay))
+            d = e if d is None else np.minimum(d, e)
+        return d - t / 2
+    return sdf
+
+
+_IMG: dict = {}  # ttk element images by name; repainted in place on a Light / Dark switch
+
+
+def _images(root):
+    """Check box, radio button and slider pictures in the palette's colours (Fluent shapes, scaled to the display)."""
+    import base64
+    import tkinter as tk
+    c, n, t = UI, px(18), max(1.0, UI["zoom"])
+    m, k, g = n / 2, px(20), n + px(8)  # box centre; slider thumb size; check / radio picture width (gap to the text)
+
+    def box(grow, col):
+        return _box(m, m, m - 0.5 - grow, m - 0.5 - grow, px(4) - grow), col
+
+    def dot(r, col, ctr=m):
+        return _dot(ctr, ctr, r), col
+    pics = {}
+    for name, edge, fill in (("off", c["muted"], c["panel"]), ("off_hov", c["text"], c["hover"]),
+                             ("off_dis", c["dis"], c["bg"])):
+        pics["chk_" + name] = (g, n, [box(0, edge), box(t, fill)])
+        pics["rad_" + name] = (g, n, [dot(m - 0.5, edge), dot(m - 0.5 - t, fill)])
+    for name, fill, mark in (("on", c["accent"], c["on_accent"]), ("on_hov", c["accent2"], c["on_accent"]),
+                             ("on_dis", c["dis"], c["bg"])):
+        pics["chk_" + name] = (g, n, [box(0, fill), (_tick(n, 1.6 * t), mark)])
+        pics["rad_" + name] = (g, n, [dot(m - 0.5, fill), dot(0.22 * n + (name == "on_hov") * t / 2, mark)])
+    for name, inner, r in (("", c["accent"], 0.25), ("_hov", c["accent2"], 0.3), ("_dis", c["dis"], 0.25)):
+        pics["thumb" + name] = (k, k, [dot(k / 2 - 0.5, c["border"], k / 2), dot(k / 2 - 0.5 - t, c["panel"], k / 2),
+                                       dot(r * k, inner, k / 2)])
+    pics["trough"] = (px(24), k, [(_box(px(12), k / 2, px(12) - 0.5, px(2), px(2)), c["border"])])
+    for name, (w, h, shapes) in pics.items():
+        data = base64.b64encode(_png(_paint(w, h, shapes)))
+        if name in _IMG and _IMG[name].tk is root.tk:
+            _IMG[name].configure(data=data)
+        else:  # the first time, or a new main window (Restart in the Setup tab)
+            _IMG[name] = tk.PhotoImage(master=root, name="cm_" + name, data=data)
+
+
 def ui_theme(root):
-    """Style every widget from UI (the Light or Dark palette): ttk styles plus matching defaults for the classic tk
-    widgets. Running it again restyles every ttk widget on screen (ui_switch does the classic ones)."""
+    """Style every widget from UI (the Light or Dark palette) and the type scale: ttk styles plus matching defaults
+    for the classic tk widgets. Running it again restyles every ttk widget on screen (ui_switch does the classic
+    ones)."""
+    import tkinter as tk
     from tkinter import font as tkfont
     from tkinter import ttk
+    ui_fonts(root)
     c = UI
+    body = "{%s} 10" % c["font"][0]
     root.configure(bg=c["bg"])
-    for pat, val in (("*Background", c["bg"]), ("*Foreground", c["text"]), ("*Font", "{Segoe UI} 10"),
+    # fonts for the classic tk widgets and ttk's text fields only: a "*Font" for all would also set every ttk.Label's
+    # own font, which beats its style's (titles, hints, captions)
+    for cls in ("Label", "Button", "Checkbutton", "Radiobutton", "Entry", "Text", "Listbox", "Spinbox", "Message",
+                "Labelframe", "Menubutton", "Scale", "TEntry", "TCombobox", "TSpinbox"):
+        root.option_add(f"*{cls}.Font", body)
+    for pat, val in (("*Background", c["bg"]), ("*Foreground", c["text"]),
                      ("*insertBackground", c["text"]), ("*selectBackground", c["accent"]),
                      ("*selectForeground", c["on_accent"]), ("*activeBackground", c["hover"]),
                      ("*activeForeground", c["text"]), ("*highlightBackground", c["bg"]),
                      ("*highlightColor", c["accent"]), ("*Label.highlightBackground", c["border"]),
-                     ("*Listbox.background", c["panel"]),
+                     ("*Listbox.background", c["panel"]), ("*Listbox.relief", "flat"),
                      ("*Text.background", c["panel"]), ("*Checkbutton.selectColor", c["panel"]),
                      ("*Button.background", c["button"]), ("*Button.relief", "flat"),
                      ("*Scale.highlightThickness", 0), ("*Scale.troughColor", c["border"]),
                      ("*Scale.sliderRelief", "flat"), ("*Scale.borderWidth", 0), ("*Scale.activeBackground", c["accent"]),
                      ("*TCombobox*Listbox.background", c["panel"]), ("*TCombobox*Listbox.foreground", c["text"]),
-                     ("*TCombobox*Listbox.font", "{Segoe UI} 10"), ("*Menu.background", c["panel"]),
-                     ("*Menu.foreground", c["text"]), ("*Menu.activeBackground", c["accent"]),
-                     ("*Menu.activeForeground", c["on_accent"]), ("*Menu.relief", "flat")):
+                     ("*TCombobox*Listbox.font", body), ("*TCombobox*Listbox.borderWidth", 0),
+                     ("*Menu.background", c["panel"]), ("*Menu.foreground", c["text"]), ("*Menu.font", body),
+                     ("*Menu.activeBackground", c["accent"]), ("*Menu.activeForeground", c["on_accent"]),
+                     ("*Menu.relief", "flat"), ("*Menu.activeBorderWidth", 0)):
         root.option_add(pat, val)
     s = ttk.Style(root)
     s.theme_use("clam")
     s.configure(".", background=c["bg"], foreground=c["text"], font=c["font"], bordercolor=c["border"],
-                lightcolor=c["bg"], darkcolor=c["bg"], troughcolor=c["border"], focuscolor=c["accent"],
+                lightcolor=c["bg"], darkcolor=c["bg"], troughcolor=c["line"], focuscolor=c["accent"],
                 selectbackground=c["accent"], selectforeground=c["on_accent"], fieldbackground=c["panel"],
-                insertcolor=c["text"], arrowcolor=c["text"])
+                insertcolor=c["text"], arrowcolor=c["muted"])
     s.map(".", foreground=[("disabled", c["dis"])])
+    s.map("TLabel", background=[])  # clam greys a disabled label's background
 
+    # buttons: primary (Accent), secondary (TButton; Tool = compact), Ghost (no fill until hovered), Danger
     def flat(base, pressed, active, disabled):  # one colour per state, no 3D bevel
         return ({k: [("pressed", pressed), ("active", active), ("disabled", disabled)]
                  for k in ("background", "lightcolor", "darkcolor")},
                 {"background": base, "lightcolor": base, "darkcolor": base})
     maps, conf = flat(c["button"], c["press"], c["hover"], c["bg"])
-    s.configure("TButton", padding=(10, 4), **conf)
-    s.map("TButton", bordercolor=[("focus", c["accent"])], **maps)
+    s.configure("TButton", padding=(px(12), px(3)), anchor="center", **conf)
+    s.map("TButton", bordercolor=[("focus", c["accent"]), ("disabled", c["line"])], **maps)
+    s.configure("Tool.TButton", padding=(px(8), px(3)), width=0)
     maps, conf = flat(c["accent"], c["accent2"], c["accent2"], c["accent_off"])
-    s.configure("Accent.TButton", foreground=c["on_accent"], bordercolor=c["accent"], font=("Segoe UI", 10, "bold"),
-                padding=(16, 6), **conf)
+    s.configure("Accent.TButton", foreground=c["on_accent"], bordercolor=c["accent"], font=c["strong"],
+                padding=(px(16), px(3)), **conf)
     s.map("Accent.TButton", foreground=[("disabled", c["accent_off_fg"])],
-          bordercolor=[("disabled", c["accent_off"]), ("focus", c["accent2"])], **maps)
-    s.configure("Tool.TButton", padding=(8, 2), width=0)
-    s.configure("Toolbutton", padding=(12, 7), anchor="w", background=c["bg"], lightcolor=c["bg"], darkcolor=c["bg"],
-                bordercolor=c["bg"])
-    s.map("Toolbutton", **{k: [("selected", c["accent"]), ("active", c["hover"])]
-                           for k in ("background", "lightcolor", "darkcolor", "bordercolor")},
-          foreground=[("selected", c["on_accent"])])
-    s.configure("TLabelframe", background=c["bg"], bordercolor=c["border"], lightcolor=c["bg"], darkcolor=c["bg"],
-                relief="solid", padding=10)
-    s.configure("TLabelframe.Label", background=c["bg"], foreground=c["text"], font=("Segoe UI Semibold", 10))
-    s.configure("TNotebook", background=c["bg"], borderwidth=0, tabmargins=(10, 6, 10, 0), bordercolor=c["border"],
-                lightcolor=c["bg"], darkcolor=c["bg"])
-    s.configure("TNotebook.Tab", padding=(10, 7), background=c["tab"], foreground=c["muted"], bordercolor=c["border"],
-                lightcolor=c["tab"], darkcolor=c["tab"])
+          bordercolor=[("disabled", c["accent_off"]), ("focus", c["text"])], **maps)
+    maps, conf = flat(c["bg"], c["press"], c["hover"], c["bg"])
+    s.configure("Ghost.TButton", bordercolor=c["bg"], padding=(px(8), px(3)), width=0, **conf)
+    s.map("Ghost.TButton", bordercolor=[("focus", c["accent"]), ("active", c["hover"])], **maps)
+    for w in ("Danger.TButton", "Danger.Tool.TButton"):
+        s.configure(w, foreground=c["bad"])
+        s.map(w, **{k: [("pressed", c["missing"]), ("active", c["missing"]), ("disabled", c["bg"])]
+                    for k in ("background", "lightcolor", "darkcolor")},
+              foreground=[("disabled", c["dis"])], bordercolor=[("focus", c["accent"]), ("active", c["bad"])])
+    s.configure("Toolbutton", padding=(px(12), px(7)), anchor="w", background=c["bg"], lightcolor=c["bg"],
+                darkcolor=c["bg"], bordercolor=c["bg"])
+    s.map("Toolbutton", **{k: [("selected", c["sel"]), ("active", c["hover"])]
+                           for k in ("background", "lightcolor", "darkcolor")},
+          bordercolor=[("focus", c["accent"]), ("selected", c["sel"]), ("active", c["hover"])],
+          foreground=[("selected", c["text"])])
+
+    # cards: titled sections with a soft border
+    s.configure("TLabelframe", background=c["bg"], bordercolor=c["line"], lightcolor=c["bg"], darkcolor=c["bg"],
+                relief="solid", padding=(px(10), px(6), px(10), px(8)), labelmargins=(px(2), 0, 0, px(4)))
+    s.configure("TLabelframe.Label", background=c["bg"], foreground=c["text"], font=c["section"])
+    s.configure("TSeparator", background=c["line"])
+    s.configure("Line.TFrame", background=c["line"])
+
+    # the page container: the sidebar picks pages, so the main notebook shows no tab strip
+    s.configure("TNotebook", background=c["bg"], borderwidth=0, tabmargins=(px(8), px(6), px(8), 0),
+                bordercolor=c["line"], lightcolor=c["bg"], darkcolor=c["bg"])
+    s.configure("TNotebook.Tab", padding=(px(10), px(6)), background=c["tab"], foreground=c["muted"],
+                bordercolor=c["line"], lightcolor=c["tab"], darkcolor=c["tab"])
     s.map("TNotebook.Tab", background=[("selected", c["bg"]), ("active", c["hover"])],
-          lightcolor=[("selected", c["bg"]), ("active", c["hover"])], foreground=[("selected", c["text"])],
-          expand=[("selected", (1, 1, 1, 0))])
-    line = tkfont.Font(root=root, family="Segoe UI", size=10).metrics("linespace")  # scales with Windows DPI
+          lightcolor=[("selected", c["bg"]), ("active", c["hover"])], foreground=[("selected", c["text"])])
+    s.configure("Pages.TNotebook", background=c["bg"], borderwidth=0, tabmargins=0, padding=0)
+    s.layout("Pages.TNotebook", [("Notebook.client", {"sticky": "nswe"})])
+    s.layout("Pages.TNotebook.Tab", [])
+
+    # lists: taller rows, quiet headings, every other row shaded (ui_rows), accent selection
+    line = tkfont.Font(root=root, font=c["font"]).metrics("linespace")  # scales with Windows DPI
     s.configure("Treeview", background=c["panel"], fieldbackground=c["panel"], foreground=c["text"],
-                rowheight=line + 8, bordercolor=c["border"], lightcolor=c["panel"], darkcolor=c["panel"])
+                rowheight=line + px(8), bordercolor=c["line"], lightcolor=c["panel"], darkcolor=c["panel"])
     s.map("Treeview", background=[("selected", c["accent"])], foreground=[("selected", c["on_accent"])])
-    s.configure("Treeview.Heading", background=c["head"], foreground=c["text"], font=("Segoe UI", 9, "bold"),
-                padding=(6, 4), relief="flat", bordercolor=c["border"], lightcolor=c["head"], darkcolor=c["head"])
-    s.map("Treeview.Heading", **{k: [("active", c["hover"])] for k in ("background", "lightcolor", "darkcolor")})
-    for w in ("TCheckbutton", "TRadiobutton"):
-        s.configure(w, indicatorbackground=c["panel"], indicatorforeground=c["accent"], indicatormargin=(0, 0, 6, 0),
-                    upperbordercolor=c["border"], lowerbordercolor=c["border"])
-        s.map(w, background=[("disabled", c["bg"]), ("active", c["bg"])],
-              indicatorbackground=[("disabled", c["bg"]), ("pressed", c["border"])],
-              upperbordercolor=[("active", c["accent"])], lowerbordercolor=[("active", c["accent"])])
+    s.configure("Treeview.Heading", background=c["head"], foreground=c["muted"], font=(c["label"][0], 9),
+                padding=(px(8), px(4)), relief="flat", bordercolor=c["line"], lightcolor=c["head"],
+                darkcolor=c["head"])
+    s.map("Treeview.Heading", **{k: [("active", c["hover"])] for k in ("background", "lightcolor", "darkcolor")},
+          foreground=[("active", c["text"])])
+
+    # check boxes, radio buttons and sliders: drawn pictures (ttk image elements) instead of clam's bevels
+    _images(root)
+    try:
+        s.element_create("cm.Check.indicator", "image", "cm_chk_off", ("disabled selected", "cm_chk_on_dis"),
+                         ("disabled", "cm_chk_off_dis"), ("active selected", "cm_chk_on_hov"),
+                         ("selected", "cm_chk_on"), ("active", "cm_chk_off_hov"), sticky="")
+        s.element_create("cm.Radio.indicator", "image", "cm_rad_off", ("disabled selected", "cm_rad_on_dis"),
+                         ("disabled", "cm_rad_off_dis"), ("active selected", "cm_rad_on_hov"),
+                         ("selected", "cm_rad_on"), ("active", "cm_rad_off_hov"), sticky="")
+        s.element_create("cm.Scale.slider", "image", "cm_thumb", ("disabled", "cm_thumb_dis"),
+                         ("pressed", "cm_thumb_hov"), ("active", "cm_thumb_hov"), sticky="")
+        s.element_create("cm.Hscale.trough", "image", "cm_trough", border=(px(10), 0), padding=0, sticky="ew")
+    except tk.TclError:
+        pass  # made by the first ui_theme; their pictures were repainted above
+    for cls, ind in (("Checkbutton", "cm.Check.indicator"), ("Radiobutton", "cm.Radio.indicator")):
+        s.layout("T" + cls, [(f"{cls}.padding", {"sticky": "nswe", "children": [
+            (ind, {"side": "left", "sticky": ""}),
+            (f"{cls}.focus", {"side": "left", "sticky": "w", "children": [(f"{cls}.label", {"sticky": "nswe"})]})]})])
+        s.configure("T" + cls, padding=(0, px(2)), focuscolor=c["accent"])
+        s.map("T" + cls, background=[("disabled", c["bg"]), ("active", c["bg"])])
+    s.layout("Horizontal.TScale", [("cm.Hscale.trough", {"sticky": "nswe", "children": [
+        ("cm.Scale.slider", {"side": "left", "sticky": ""})]})])
+    s.configure("TScale", background=c["bg"])
+
+    # fields: one height for entries, dropdowns and spin boxes; an accent border while typing
     for w in ("TEntry", "TCombobox", "TSpinbox"):
-        s.configure(w, fieldbackground=c["panel"], foreground=c["text"], padding=3, bordercolor=c["border"],
-                    lightcolor=c["panel"], darkcolor=c["panel"], insertcolor=c["text"])
+        s.configure(w, fieldbackground=c["panel"], foreground=c["text"], padding=(px(6), px(3)),
+                    bordercolor=c["border"], lightcolor=c["panel"], darkcolor=c["panel"], insertcolor=c["text"])
         s.map(w, bordercolor=[("focus", c["accent"]), ("hover", c["muted"])], lightcolor=[("focus", c["accent"])],
               fieldbackground=[("readonly", c["bg"] if w == "TEntry" else c["panel"]), ("disabled", c["bg"])])
     for w in ("TCombobox", "TSpinbox"):
-        s.configure(w, background=c["button"], arrowcolor=c["text"])
-    s.map("TCombobox", background=[("active", c["hover"])], selectbackground=[("readonly", c["panel"])],
-          selectforeground=[("readonly", c["text"])])
-    s.configure("TScrollbar", background=c["button"], troughcolor=c["bg"], bordercolor=c["bg"],
-                lightcolor=c["button"], darkcolor=c["button"], arrowcolor=c["muted"], gripcount=0)
-    s.map("TScrollbar", **{k: [("active", c["hover"])] for k in ("background", "lightcolor", "darkcolor")})
-    s.configure("TScale", background=c["button"], troughcolor=c["border"], bordercolor=c["border"],
-                lightcolor=c["button"], darkcolor=c["button"])
-    s.map("TScale", background=[("active", c["hover"])])
-    s.configure("TSeparator", background=c["border"])
-    s.configure("Hint.TLabel", foreground=c["muted"], font=("Segoe UI", 9))
-    s.configure("Field.TLabel", foreground=c["muted"], font=("Segoe UI", 8, "bold"))
-    s.configure("Status.TLabel", padding=(2, 4))
-    s.configure("Good.TLabel", foreground=c["good"], font=("Segoe UI", 9, "bold"))
-    s.configure("Bad.TLabel", foreground=c["bad"], font=("Segoe UI", 9, "bold"))
-    s.configure("Name.TLabel", font=("Segoe UI Semibold", 10))
-    s.configure("Remote.TLabel", background=c["remote"], foreground="#ffffff", font=("Segoe UI", 10, "bold"),
-                padding=(8, 4))  # working on a linked computer: unmistakable, in both themes
-    s.configure("Local.TLabel", background=c["head"], foreground=c["text"], font=("Segoe UI", 9, "bold"),
-                padding=(6, 3))
-    s.configure("Header.TFrame", background=c["panel"])
-    s.configure("Header.TLabel", background=c["panel"])
-    s.configure("HeadTitle.TLabel", background=c["panel"], foreground=c["text"], font=("Segoe UI", 15, "bold"))
-    s.configure("HeadSub.TLabel", background=c["panel"], foreground=c["muted"])
+        s.configure(w, background=c["panel"], arrowcolor=c["muted"], arrowsize=px(12))
+        s.map(w, background=[("active", c["hover"]), ("disabled", c["bg"])], arrowcolor=[("disabled", c["dis"])])
+    s.map("TCombobox", selectbackground=[("readonly", c["panel"])], selectforeground=[("readonly", c["text"])])
+
+    # thin scroll bars without arrow buttons
+    for o in ("Vertical", "Horizontal"):
+        s.layout(f"{o}.TScrollbar", [(f"{o}.Scrollbar.trough", {"sticky": "nswe", "children": [
+            (f"{o}.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
+    s.configure("TScrollbar", background=c["line"], troughcolor=c["panel"], bordercolor=c["panel"],
+                lightcolor=c["line"], darkcolor=c["line"], arrowsize=px(8), gripcount=0)
+    s.map("TScrollbar", **{k: [("pressed", c["muted"]), ("active", c["border"])]
+                           for k in ("background", "lightcolor", "darkcolor")})
+
+    # text: hints, form captions, status lines (info / success / warning / error), names, numbers, empty lists
+    s.configure("Hint.TLabel", foreground=c["muted"], font=c["caption"])
+    s.configure("Field.TLabel", foreground=c["muted"], font=c["label"])
+    s.configure("Status.TLabel", foreground=c["muted"], padding=(px(2), px(4)))
+    s.configure("Good.TLabel", foreground=c["good"], font=c["strong"])
+    s.configure("Warn.TLabel", foreground=c["warn"], font=c["strong"])
+    s.configure("Bad.TLabel", foreground=c["bad"], font=c["strong"])
+    s.configure("Name.TLabel", font=c["strong"])
+    s.configure("Mono.TLabel", font=c["mono"])
+    s.configure("Empty.TLabel", background=c["panel"], foreground=c["muted"], justify="center", anchor="center")
+    # where a tool works: this PC (a quiet chip), a linked computer (purple, unmistakable in both themes)
+    s.configure("Remote.TLabel", background=c["remote"], foreground="#ffffff", font=c["strong"],
+                padding=(px(10), px(5)))
+    s.configure("Local.TLabel", background=c["bg"], foreground=c["muted"], font=c["strong"], padding=(0, px(5), px(6), px(5)))
+
+    # the main window's frame: sidebar, page headers, status bar
+    s.configure("Side.TFrame", background=c["side"])
+    s.configure("Brand.TLabel", background=c["side"], foreground=c["text"], font=c["section"])
+    s.configure("Caption.TLabel", background=c["side"], foreground=c["muted"], font=c["label"])
+    for name, bg in (("Nav", c["side"]), ("NavHover", c["nav_hover"]), ("NavOn", c["sel"])):
+        s.configure(f"{name}.TFrame", background=bg, bordercolor=bg, relief="solid", borderwidth=1)
+        s.configure(f"{name}Focus.TFrame", background=bg, bordercolor=c["accent"], relief="solid", borderwidth=1)
+        s.configure(f"{name}.TLabel", background=bg, foreground=c["text"], font=c["font"])  # same width selected
+        s.configure(f"{name}Icon.TLabel", background=bg, foreground=c["accent"] if name == "NavOn" else c["muted"],
+                    font=c["icon"])
+    s.configure("NavBar.TFrame", background=c["accent"])
+    maps, conf = flat(c["side"], c["press"], c["nav_hover"], c["side"])
+    s.configure("NavToggle.TButton", font=c["icon"], foreground=c["muted"], bordercolor=c["side"],
+                padding=(px(8), px(6)), width=0, **conf)
+    s.map("NavToggle.TButton", bordercolor=[("focus", c["accent"]), ("active", c["nav_hover"])], **maps)
+    s.configure("PageTitle.TLabel", font=c["title"], foreground=c["text"])
+    s.configure("PageDesc.TLabel", foreground=c["muted"])
+    s.configure("Bar.TFrame", background=c["side"])
+    s.configure("Bar.TLabel", background=c["side"], foreground=c["muted"], font=c["caption"])
+    for name, fg in (("Off", c["muted"]), ("On", c["good"]), ("Warn", c["warn"]), ("Bad", c["bad"]),
+                     ("Remote", c["remote"] if c["mode"] == "light" else "#b794f6")):
+        s.configure(f"Bar{name}.TLabel", background=c["side"], foreground=fg, font=c["icon_small"])
     root.bind_class("Tk", "<Map>", lambda e: ui_titlebar(e.widget))  # each window gets its title bar when shown
     root.bind_class("Toplevel", "<Map>", lambda e: ui_titlebar(e.widget))
+    ui_rows()
+
+
+def ui_rows():
+    """Every list (ttk.Treeview) shades every other row and shows its empty-state hint (ui_empty) when it has no
+    rows: its row changes (insert / delete / move / tags / open) are noticed here once, for all of them."""
+    from tkinter import ttk
+    if getattr(ttk.Treeview, "_cm_rows", False):
+        return
+    ttk.Treeview._cm_rows = True
+
+    def soon(tree):
+        if not getattr(tree, "_cm_job", None):
+            try:
+                tree._cm_job = tree.after_idle(lambda: _restripe(tree))
+            except Exception:
+                pass
+
+    def wrap(name, when=lambda a, k: True):
+        real = getattr(ttk.Treeview, name)
+
+        def fn(self, *a, **k):
+            out = real(self, *a, **k)
+            if when(a, k):
+                soon(self)
+            return out
+        fn._cm_real = real
+        setattr(ttk.Treeview, name, fn)
+    for name in ("insert", "delete", "move", "detach"):
+        wrap(name)
+    wrap("item", lambda a, k: "tags" in k or "open" in k)
+
+
+def _restripe(tree):
+    tree._cm_job = None
+    try:
+        if not tree.winfo_exists():
+            return
+        from tkinter import ttk
+        item = ttk.Treeview.item._cm_real
+        tree.tag_configure("odd", background=UI["stripe"])
+
+        def rows(parent):
+            for it in tree.get_children(parent):
+                yield it
+                if item(tree, it, "open"):
+                    yield from rows(it)
+        n = 0
+        for n, it in enumerate(rows(""), 1):
+            tags = [t for t in tree.tk.splitlist(item(tree, it, "tags")) if t != "odd"]
+            item(tree, it, tags=tags + ["odd"] * (n % 2 == 0))
+        hint = getattr(tree, "_cm_empty", None)
+        if hint is not None:
+            hint.place(relx=0.5, rely=0.5, anchor="center") if not n else hint.place_forget()
+    except Exception:  # a list closing meanwhile
+        pass
+
+
+def ui_empty(tree, text):
+    """A centred hint inside an empty list (a page's main list), instead of a blank box."""
+    from tkinter import ttk
+    tree._cm_empty = ttk.Label(tree, text=text, style="Empty.TLabel", justify="center", wraplength=px(520))
+    _restripe(tree)
+
+
+DANGER = {"Remove", "Remove selected", "Clear", "Clear all", "Clear key", "Delete", "Unlink", "Revert"}
+
+
+def ui_danger(root):
+    """Destructive buttons (named in DANGER) in the danger colour, all over the window: one pass once it's built, so
+    every tab follows the same rule."""
+    from tkinter import ttk
+    todo = [root]
+    while todo:
+        w = todo.pop()
+        todo += w.winfo_children()
+        if isinstance(w, ttk.Button) and str(w.cget("text")) in DANGER and "Danger" not in str(w.cget("style")):
+            w.configure(style="Danger." + (str(w.cget("style")) or "TButton"))
+
+
+def ui_page(page, title, desc):
+    """A page's header: its title and one line on what it's for; a linked-computer strip goes right under it."""
+    from tkinter import ttk
+    head = ttk.Frame(page, name="head", padding=(10, px(8), 10, 0))  # 10: the tabs' own margin
+    head.pack(side="top", fill="x")
+    ttk.Label(head, text=title, style="PageTitle.TLabel").pack(side="left")
+    ttk.Label(head, text=desc, style="PageDesc.TLabel").pack(side="left", anchor="s", padx=(px(16), 0), pady=(0, px(4)))
+
+
+def ui_sidebar(root, nb, groups, cfg):
+    """The main window's navigation down the left: groups of pages (icon + name; groups = [(caption, [(tab text,
+    icon key), ...]), ...], the last group's caption None = at the foot, like Setup). It only picks the notebook's
+    pages - the notebook keeps its tabs, their names and order (its tab strip is hidden). Click a page, or Up / Down /
+    Home / End while the sidebar has focus, Ctrl+Tab / Ctrl+Shift+Tab anywhere. Narrow windows show icons only; the
+    menu button does it on wide ones too (kept in cfg["nav_compact"])."""
+    from tkinter import ttk
+    side = ttk.Frame(root, style="Side.TFrame", name="sidebar", takefocus=1)
+    pages = {nb.tab(t, "text"): t for t in nb.tabs()}
+    st = {"hover": None, "compact": None, "focus": False}
+    order, items, captions = [], {}, []
+    top = ttk.Frame(side, style="Side.TFrame", padding=(px(4), px(8), px(4), px(6)))
+    top.pack(fill="x")
+    toggle = ttk.Button(top, text=ICON["menu"], style="NavToggle.TButton", takefocus=0,
+                        command=lambda: (cfg.__setitem__("nav_compact", not st["compact"]), fit()))
+    toggle.pack(side="left")
+    Tip(toggle, lambda: "Widen the window to show the page names" if narrow() else
+        "Show page names" if st["compact"] else "Icons only")
+    brand = ttk.Label(top, text="Channel Mirror", style="Brand.TLabel")
+    foot = ttk.Frame(side, style="Side.TFrame", padding=(0, px(4), 0, px(8)))
+    foot.pack(side="bottom", fill="x")
+    body = ttk.Frame(side, style="Side.TFrame")
+    body.pack(fill="both", expand=True)
+
+    def paint(text):
+        f, bar, ic, lb = items[text]
+        on = nb.select() == pages[text]
+        state = "NavOn" if on else "NavHover" if st["hover"] == text else "Nav"
+        f.configure(style=f"{state}Focus.TFrame" if on and st["focus"] else f"{state}.TFrame")
+        bar.configure(style="NavBar.TFrame" if on else f"{state}.TFrame")
+        ic.configure(style=f"{state}Icon.TLabel")
+        lb.configure(style=f"{state}.TLabel")
+
+    def show(*_):
+        for text in items:
+            paint(text)
+
+    def go(text):
+        nb.select(pages[text])
+
+    def hover(text, on):
+        if on:
+            st["hover"] = text
+        elif st["hover"] == text:
+            f = items[text][0]
+            w = f.winfo_containing(*f.winfo_pointerxy())
+            if w not in items[text]:
+                st["hover"] = None
+        show()
+    for caption, entries in groups:
+        parent = body if caption else foot
+        if caption:
+            cap = ttk.Label(body, text=caption.upper(), style="Caption.TLabel", padding=(px(16), px(10), 0, px(2)))
+            cap.pack(fill="x")
+            captions.append((cap, caption.upper(), ttk.Separator(cap)))  # icons only: a short rule instead
+        for text, icon in entries:
+            f = ttk.Frame(parent, style="Nav.TFrame", class_="NavItem", padding=1)
+            bar = ttk.Frame(f, style="Nav.TFrame", width=px(3))
+            bar.pack(side="left", fill="y", pady=px(7))
+            ic = ttk.Label(f, text=ICON[icon], style="NavIcon.TLabel", padding=(px(8), px(6), px(8), px(6)))
+            ic.pack(side="left")
+            lb = ttk.Label(f, text=text, style="Nav.TLabel", padding=(0, 0, px(12), 0))
+            f.pack(fill="x", padx=px(4), pady=1)
+            items[text] = (f, bar, ic, lb)
+            order.append(text)
+            for w in (f, ic, lb, bar):
+                w.bind("<Button-1>", lambda e, t=text: go(t))
+                w.bind("<Enter>", lambda e, t=text: hover(t, True))
+                w.bind("<Leave>", lambda e, t=text: side.after(15, hover, t, False))
+            Tip(ic, lambda t=text: t if st["compact"] else "")
+
+    def step(d, wrap=True):
+        cur = next((t for t in order if nb.select() == pages[t]), order[0])
+        i = order.index(cur) + d
+        go(order[i % len(order)] if wrap else order[max(0, min(len(order) - 1, i))])
+        return "break"
+    for key, fn in (("<Up>", lambda e: step(-1, False)), ("<Down>", lambda e: step(1, False)),
+                    ("<Home>", lambda e: step(-len(order), False)), ("<End>", lambda e: step(len(order), False))):
+        side.bind(key, fn)
+    for key, d in (("<Control-Tab>", 1), ("<Control-Shift-Tab>", -1)):
+        root.bind(key, lambda e, d=d: step(d))
+    side.bind("<FocusIn>", lambda e: (st.update(focus=True), show()))
+    side.bind("<FocusOut>", lambda e: (st.update(focus=False), show()))
+    nb.bind("<<NotebookTabChanged>>", show, add="+")
+
+    def narrow():
+        return root.winfo_width() < px(1280)
+
+    def fit():
+        compact = narrow() or bool(cfg.get("nav_compact"))
+        toggle.state(["disabled" if narrow() else "!disabled"])
+        if compact == st["compact"]:
+            return
+        st["compact"] = compact
+        if compact:
+            brand.pack_forget()
+        else:
+            brand.pack(side="left", padx=px(4))
+        for f, bar, ic, lb in items.values():
+            lb.pack_forget() if compact else lb.pack(side="left", fill="x", expand=True)
+        for cap, text, rule in captions:
+            cap.configure(text="" if compact else text)
+            rule.place(relx=0.5, rely=0.6, anchor="center", relwidth=0.4) if compact else rule.place_forget()
+    root.bind("<Configure>", lambda e: e.widget is root and fit(), add="+")
+    fit()
+    show()
+    return side
+
+
+def ui_statusbar(root, keys, right=""):
+    """The window's foot: live state, one item per key (icon + text, coloured by kind; click = its page) and `right`
+    at the far right. Returns put(key, icon, text, kind="Off" | "On" | "Warn" | "Bad" | "Remote", page=None);
+    text None hides the item."""
+    from tkinter import ttk
+    bar = ttk.Frame(root, style="Bar.TFrame", padding=(px(12), px(2)), name="statusbar")
+    ttk.Label(bar, text=right, style="Bar.TLabel").pack(side="right")
+    items, shown, click = {}, [], {}  # type: ignore[var-annotated]
+    for k in keys:
+        f = ttk.Frame(bar, style="Bar.TFrame", cursor="hand2")
+        ic, tx = ttk.Label(f, style="BarOff.TLabel"), ttk.Label(f, style="Bar.TLabel")
+        ic.pack(side="left", padx=(0, px(6)))
+        tx.pack(side="left")
+        for w in (f, ic, tx):
+            w.bind("<Button-1>", lambda e, k=k: click.get(k) and click[k]())
+        items[k] = (f, ic, tx)
+
+    def put(key, icon, text, kind="Off", page=None):
+        f, ic, tx = items[key]
+        if text is not None:
+            ic.configure(text=ICON[icon], style=f"Bar{kind}.TLabel")
+            tx.configure(text=text)
+            click[key] = page
+        vis = set(shown) - {key} | ({key} if text is not None else set())
+        now = [k for k in keys if k in vis]
+        if now != shown:
+            shown[:] = now
+            for k in keys:
+                items[k][0].pack_forget()
+            for k in shown:
+                items[k][0].pack(side="left", padx=(0, px(20)))
+    return bar, put
 
 
 def ui_recolour(root, old, new):
@@ -240,7 +675,7 @@ class Tip:
         self.win = tk.Toplevel(self.w)
         self.win.wm_overrideredirect(True)
         self.win.wm_geometry(f"+{self.w.winfo_rootx() + 12}+{self.w.winfo_rooty() + self.w.winfo_height() + 4}")
-        tk.Label(self.win, text=text, justify="left", bg=UI["tip"], fg=UI["tip_fg"], font=("Segoe UI", 9),
+        tk.Label(self.win, text=text, justify="left", bg=UI["tip"], fg=UI["tip_fg"], font=UI["caption"],
                  padx=8, pady=5, wraplength=420, highlightthickness=1, highlightbackground=UI["border"]).pack()
 
     def hide(self):
@@ -464,13 +899,13 @@ def ui_sound_form(parent, v):
     """Action / fade / fade length / volume / output fields (labels above) bound to the tk variables in v."""
     from tkinter import ttk
     f = ttk.Frame(parent)
-    out = ttk.Combobox(f, textvariable=v["output"], width=34)
+    out = ttk.Combobox(f, textvariable=v["output"], width=28)
     out.config(postcommand=lambda: out.config(values=sd_output_choices()))
     fields = (("ACTION", ttk.Combobox(f, textvariable=v["mode"], values=SD_MODES, state="readonly", width=15)),
               ("FADE", ttk.Combobox(f, textvariable=v["fade"], values=SD_FADES, state="readonly", width=14)),
               ("FADE LENGTH (S)", ttk.Combobox(f, textvariable=v["fade_len"], values=("1", "2", "3", "4", "5"),
                                                state="readonly", width=5)),
-              ("VOLUME", ui_volume(f, v["volume"])),
+              ("VOLUME", ui_volume(f, v["volume"], 120)),
               ("OUTPUT DEVICE", out))
     for i, (label, w) in enumerate(fields):
         ttk.Label(f, text=label, style="Field.TLabel").grid(row=0, column=i, sticky="w", padx=(0, 14))

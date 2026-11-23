@@ -24,7 +24,7 @@ from .music import (
     music_order,
     music_title,
 )
-from .ui import Tip, UI, ui_background, ui_keys, ui_volume
+from .ui import Tip, UI, ui_background, ui_empty, ui_keys, ui_volume
 
 
 def music_tab(page, cfg):
@@ -135,6 +135,7 @@ def music_tab(page, cfg):
     box = ttk.Frame(sf)
     box.pack(side="left", fill="both", expand=True)
     stv = ttk.Treeview(box, columns=("n", "song", "folder"), show="headings", selectmode="extended", height=3)
+    ui_empty(stv, "This playlist is empty. Add files or a folder of songs.")
     for c, h, w in (("n", "#", 40), ("song", "Song", 320), ("folder", "Folder", 220)):
         stv.heading(c, text=h)
         stv.column(c, width=w, stretch=c != "n", anchor="e" if c == "n" else "w")

@@ -40,6 +40,7 @@ from .ui import (
     ui_obs_levels,
     ui_pick_sounds,
     ui_sound_form,
+    ui_empty,
 )
 
 
@@ -87,6 +88,7 @@ def streamdeck_tab(page, cfg, made):
     tl = ttk.Frame(box)
     tl.pack(fill="both", expand=True)
     tree = ttk.Treeview(tl, columns=cols, show="headings", height=6)
+    ui_empty(tree, "No sounds yet. Add files, a folder, or the Channel Mirror tab's outputs.")
     for c, h, w in zip(cols, ("Name", "Key", "Action", "Fade", "Vol", "Output", "File"), (130, 50, 105, 120, 45, 110, 240)):
         tree.heading(c, text=h)
         tree.column(c, width=w, stretch=c in ("file", "title"))

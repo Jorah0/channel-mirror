@@ -24,7 +24,7 @@ from .vts import (
     vts_models,
     vts_running,
 )
-from .ui import DeckGrid, Tip, UI
+from .ui import DeckGrid, Tip, UI, ui_empty
 
 
 def vts_tab(page, cfg, deck):
@@ -136,6 +136,7 @@ def vts_tab(page, cfg, deck):
     bf = ttk.LabelFrame(left, text="1. Backgrounds (pictures: png / jpg; videos: mp4) - copied in this order")
     bf.pack(fill="both", expand=True, pady=(10, 0))
     tv = ttk.Treeview(bf, columns=("n", "file", "folder", "state"), show="headings", height=8)
+    ui_empty(tv, "No backgrounds yet. Add pictures or videos, one by one or a whole folder.")
     for c, h, w in (("n", "#", 36), ("file", "File", 220), ("folder", "From folder", 170),
                     ("state", "In VTube Studio", 170)):
         tv.heading(c, text=h)

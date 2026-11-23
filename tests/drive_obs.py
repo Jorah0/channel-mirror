@@ -10,6 +10,7 @@ there (scenes, streaming, mute, Add to OBS), files sent for its OBS (accepted ->
 refused again when switched off, and back to this PC's OBS. Settings kept on close.
 Usage: python -u drive_obs.py <repo>"""
 import json
+import time
 import shutil
 import subprocess
 import sys
@@ -74,10 +75,12 @@ v, st = O["vars"], O["state"]
 
 
 def a_state():
-    try:
-        return json.loads((work / "a_state.json").read_text())
-    except (OSError, ValueError):
-        return {}
+    for _ in range(25):  # PC-A rewrites the file all the time: a read caught mid-write is tried again
+        try:
+            return json.loads((work / "a_state.json").read_text())
+        except (OSError, ValueError):
+            time.sleep(0.02)
+    return {}
 
 
 def a_log():

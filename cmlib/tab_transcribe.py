@@ -2,6 +2,7 @@
 import os
 from .core import AUDIO_EXT, VIDEO_EXT
 from .mirror import media_files
+from .ui import ui_empty
 from .transcribe import (
     DOC_FORMATS,
     VAD_MODEL,
@@ -59,6 +60,7 @@ def transcribe_tab(page, cfg):
     box.pack(side="left", fill="both", expand=True)
     cols = ("file", "status", "result")
     tv = ttk.Treeview(box, columns=cols, show="headings", height=6)
+    ui_empty(tv, "No files yet. Add videos or audio files to transcribe.")
     for c, h, w in zip(cols, ("File", "Status", "Saved as"), (300, 200, 420)):
         tv.heading(c, text=h)
         tv.column(c, width=w, stretch=c != "status")

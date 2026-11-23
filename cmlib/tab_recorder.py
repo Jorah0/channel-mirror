@@ -13,7 +13,7 @@ from .recorder import (
     rec_overlay,
     rec_to_app,
 )
-from .ui import UI, ui_background
+from .ui import UI, ui_background, ui_empty
 
 
 def recorder_tab(page, cfg):
@@ -121,6 +121,7 @@ def recorder_tab(page, cfg):
     lf = ttk.LabelFrame(body, text="Recordings this session (double-click to play)")
     lf.pack(fill="both", expand=True, pady=(12, 0))
     tv = ttk.Treeview(lf, columns=("file", "length", "size", "folder"), show="headings", height=5)
+    ui_empty(tv, "Nothing recorded yet this session. Press Record to start.")
     for c, h, w_ in (("file", "File", 300), ("length", "Length", 80), ("size", "Size", 80), ("folder", "Folder", 400)):
         tv.heading(c, text=h)
         tv.column(c, width=w_, stretch=c in ("file", "folder"))
