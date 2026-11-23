@@ -194,7 +194,7 @@ def tour():
         nb = next(w for w in walk(r) if isinstance(w, ttk.Notebook))
         tabs = {nb.tab(t, "text"): r.nametowidget(t) for t in nb.tabs()}
         order = [nb.tab(t, "text") for t in nb.tabs()]
-        assert order[-3:] == ["Link", "Linked computers", "Setup"] and "Music player" in order, order
+        assert order[-4:] == ["Link", "Linked computers", "Phone remote", "Setup"] and "Music player" in order, order
         mus, M = tabs["Music player"], held["music"]
         nb.select(mus)
         r.update()

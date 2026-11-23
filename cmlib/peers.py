@@ -636,7 +636,12 @@ def pair_offer(code, role):
     """This side's (secret exponent, public value) for role "A" (asks) or "B" (answers); code = what both know."""
     import secrets
     x = secrets.randbelow(PAIR_Q - 1) + 1
-    return x, pow(2, x, PAIR_P) * pow(pair_point(role), pair_code(code), PAIR_P) % PAIR_P
+    return x, pair_pub(code, role, x)
+
+
+def pair_pub(code, role, x):
+    """The public value sent for secret exponent x (role "A" / "B"): 2^x * M-or-N^w."""
+    return pow(2, x, PAIR_P) * pow(pair_point(role), pair_code(code), PAIR_P) % PAIR_P
 
 
 def pair_secret(code, role, x, pub_a, pub_b, id_a):

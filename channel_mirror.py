@@ -19,6 +19,8 @@ import cmlib.peers
 import cmlib.recorder
 import cmlib.setup
 import cmlib.music
+import cmlib.remote
+import cmlib.remote_app
 import cmlib.docs
 import cmlib.transcribe
 import cmlib.ui
@@ -35,6 +37,7 @@ import cmlib.tab_setup
 import cmlib.tab_music
 import cmlib.tab_obs
 import cmlib.tab_transcribe
+import cmlib.tab_remote
 import cmlib.app
 
 from cmlib.core import set_shared
@@ -46,9 +49,9 @@ from cmlib.peers import link_handover
 
 for _m in (
     cmlib.core, cmlib.install, cmlib.mirror, cmlib.deck, cmlib.vts, cmlib.link, cmlib.obs, cmlib.peers, cmlib.recorder,
-    cmlib.setup, cmlib.music, cmlib.docs, cmlib.transcribe, cmlib.ui, cmlib.ui_link, cmlib.dialogs, cmlib.tab_import, cmlib.tab_mover,
+    cmlib.setup, cmlib.music, cmlib.remote, cmlib.remote_app, cmlib.docs, cmlib.transcribe, cmlib.ui, cmlib.ui_link, cmlib.dialogs, cmlib.tab_import, cmlib.tab_mover,
     cmlib.tab_recorder, cmlib.tab_vts, cmlib.tab_link, cmlib.tab_editor, cmlib.tab_soundboard,
-    cmlib.tab_setup, cmlib.tab_music, cmlib.tab_obs, cmlib.tab_transcribe, cmlib.app,
+    cmlib.tab_setup, cmlib.tab_music, cmlib.tab_obs, cmlib.tab_transcribe, cmlib.tab_remote, cmlib.app,
 ):
     globals().update({k: v for k, v in vars(_m).items() if not k.startswith("__")})
 

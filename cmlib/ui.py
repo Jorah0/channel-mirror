@@ -40,7 +40,7 @@ UI = {**UI_LIGHT, "font": ("Segoe UI", 10), "small": ("Segoe UI", 8), "zoom": 1.
 ICON = {"mirror": "", "soundboard": "", "editor": "", "import": "", "mover": "",
         "recorder": "", "vts": "", "music": "", "obs": "", "transcribe": "",
         "link": "", "peers": "", "setup": "", "menu": "", "ok": "", "warn": "",
-        "error": "", "info": "", "volume": "", "sync": ""}
+        "error": "", "info": "", "volume": "", "sync": "", "phone": ""}
 
 
 # for a live switch: which widget options hold a background or a text colour, and the palette keys for each

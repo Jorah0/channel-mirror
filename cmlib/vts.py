@@ -199,3 +199,97 @@ def vts_running():
     r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq VTube Studio.exe", "/NH"], capture_output=True, text=True,
                        creationflags=NO_WINDOW)
     return "vtube studio.exe" in r.stdout.lower()
+
+
+# --- VTube Studio's own API (a websocket on this PC; in VTube Studio: Settings > Start API). Background hotkeys can't
+# be pressed from outside any other way: they have no keys of their own (Channel Mirror makes them for Stream Deck).
+VTS_API_PORT = 8001
+VTS_PLUGIN = {"pluginName": "Channel Mirror", "pluginDeveloper": "Channel Mirror"}
+
+
+def vts_api(port, token, requests=(), timeout=5.0):
+    """Talk to VTube Studio's API on this PC. token None: ask VTube Studio for one (it shows Allow / Deny there; wait
+    up to timeout) -> [the token]. Else sign in with it, then each (messageType, data) -> [its response data, ...].
+    OSError saying why (not running, API off, not allowed, refused)."""
+    import base64
+    import hashlib
+    import secrets
+    import socket
+    from .obs import WS_GUID, ws_frame, ws_read
+    buf, s = bytearray(), None
+    try:
+        s = socket.create_connection(("127.0.0.1", int(port)), timeout=timeout)
+
+        def recv(n):
+            while len(buf) < n:
+                c = s.recv(65536)
+                if not c:
+                    raise OSError("VTube Studio closed the connection")
+                buf.extend(c)
+            out = bytes(buf[:n])
+            del buf[:n]
+            return out
+        key = base64.b64encode(secrets.token_bytes(16)).decode()
+        s.sendall((f"GET / HTTP/1.1\r\nHost: 127.0.0.1:{int(port)}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                   f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+        while b"\r\n\r\n" not in buf:
+            if len(buf) > 16384:
+                raise OSError("That port isn't VTube Studio's API")
+            c = s.recv(4096)
+            if not c:
+                raise OSError("VTube Studio closed the connection")
+            buf.extend(c)
+        head, rest = bytes(buf).split(b"\r\n\r\n", 1)
+        buf[:] = rest
+        lines = head.decode("latin-1").split("\r\n")
+        hdr = {k.strip().lower(): v.strip() for k, _, v in (ln.partition(":") for ln in lines[1:])}
+        if not lines[0].startswith("HTTP/1.1 101") or hdr.get("sec-websocket-accept") != base64.b64encode(
+                hashlib.sha1((key + WS_GUID).encode()).digest()).decode():
+            raise OSError("That port isn't VTube Studio's API")
+
+        def ask(mtype, data):
+            rid = secrets.token_hex(8)
+            s.sendall(ws_frame(1, json.dumps({"apiName": "VTubeStudioPublicAPI", "apiVersion": "1.0", "requestID": rid,
+                                              "messageType": mtype, "data": data}).encode()))
+            while True:
+                op, payload = ws_read(recv, lambda o, d: s.sendall(ws_frame(10, d)) if o == 9 else None, masked=False)
+                if op == 8:
+                    raise OSError("VTube Studio closed the connection")
+                try:
+                    m = json.loads(payload)
+                except ValueError:
+                    raise OSError("VTube Studio sent something odd") from None
+                if not isinstance(m, dict) or m.get("requestID") != rid:
+                    continue  # (an event, or an answer to something else)
+                d = m.get("data") if isinstance(m.get("data"), dict) else {}
+                if m.get("messageType") == "APIError":
+                    raise OSError(f"VTube Studio: {str(d.get('message') or 'refused')[:200]}")
+                return d
+        if token is None:
+            got = str(ask("AuthenticationTokenRequest", dict(VTS_PLUGIN)).get("authenticationToken") or "")
+            if not got:
+                raise OSError("VTube Studio didn't allow Channel Mirror")
+            return [got]
+        if not ask("AuthenticationRequest", dict(VTS_PLUGIN, authenticationToken=str(token))).get("authenticated"):
+            raise OSError("VTube Studio doesn't allow Channel Mirror any more - allow it again (Phone remote page)")
+        return [ask(t, d) for t, d in requests]
+    except (socket.timeout, TimeoutError):
+        raise OSError("VTube Studio didn't answer in time") from None
+    except ConnectionRefusedError:
+        raise OSError("VTube Studio isn't running with its API on (VTube Studio: Settings > Start API)") from None
+    except ValueError as e:
+        raise OSError(f"VTube Studio: {e}") from None
+    finally:
+        if s:
+            s.close()
+
+
+def vts_backgrounds(port, token):
+    """The model loaded in VTube Studio now and its background hotkeys: {"model", "backgrounds": [{"id", "name"}]}."""
+    from .peers import peer_name
+    hk = vts_api(port, token, [("HotkeysInCurrentModelRequest", {})])[0]
+    return {"model": peer_name(hk.get("modelName") or "", 80) if hk.get("modelLoaded") else "",
+            "backgrounds": [{"id": str(h.get("hotkeyID")), "name": peer_name(h.get("name") or h.get("file") or "", 60)}
+                            for h in hk.get("availableHotkeys") or [] if isinstance(h, dict)
+                            and h.get("type") == "ChangeBackground" and h.get("hotkeyID")][:200]}
+

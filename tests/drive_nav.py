@@ -28,7 +28,7 @@ assert sorted(order) == sorted(pages) and len(order) == len(pages), order  # eve
 assert order[-1] == "Setup" and order[:3] == ["Channel Mirror", "Music player", "Transcribe"], order
 assert pages == ["Channel Mirror", "Stream Deck soundboard", "Stream Deck editor", "Import to folders", "Key mover",
                  "Screen recorder", "VTube Studio backgrounds", "Music player", "OBS", "Transcribe", "Link",
-                 "Linked computers", "Setup"], pages  # the notebook keeps its tabs, names and order
+                 "Linked computers", "Phone remote", "Setup"], pages  # the notebook keeps its tabs, names and order
 heads = [str(w.cget("text")) for p in pages for w in app.walk(app.tab(p).nametowidget("head"))
          if isinstance(w, ttk.Label) and str(w.cget("style")) == "PageTitle.TLabel"]
 assert heads == pages, heads  # each page's header has its title

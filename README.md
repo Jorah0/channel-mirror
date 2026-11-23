@@ -270,6 +270,24 @@ The list shows each linked computer's name, address, **linked until** (and days 
 - requests: a fixed list (look at its Stream Deck / VTube Studio / files, send files or changes for a tab, start / stop a recording, link / renew / unlink, and - only where that PC ticked *May control OBS* - the OBS tab's own commands, each checked). Anything else is refused and the reason is shown.
 - It only works between PCs on your home network. Every request is signed with the link's secret (the secret itself crosses the network once, when you link); recordings of a request can't be replayed; file paths from the other PC are never used here.
 
+## Phone remote (Connect group)
+
+Your phone or tablet as a remote for this PC: a web app Channel Mirror serves (nothing to install from a store). Off until you turn it on. Four tabs on the phone:
+- **Deck**: a grid of the Stream Deck soundboard tab's sounds, or of one Stream Deck page's sound keys (pick it under *The phone's Deck shows*). A tap plays into the soundboard feed (OBS page > Feeds, which must be started), on this PC, or both; *Stop all*.
+- **OBS**: going live / recording / virtual camera, scenes, sources show / hide, mute and volume, media sources. Needs OBS connected on the OBS page.
+- **Music**: the Music player - playlists, a song, play / pause / next / previous / stop, seek, volume.
+- **Capture**: the screen recorder (record / stop) and VTube Studio backgrounds. VTube Studio is switched through its own API: in VTube Studio turn on *Settings > Start API*, then press *Allow in VTube Studio* here and *Allow* in VTube Studio. The phone then lists the loaded model's background hotkeys (the VTube Studio backgrounds page makes them) and switches them. It can't tell which background is showing now.
+
+**Set it up**
+1. On the PC: *Phone remote* > *Turn on* (Windows may ask once: allow private networks).
+2. To use it away from home, install **Tailscale** (free, tailscale.com/download) on this PC and the phone and sign in to the same account on both. Then turn the remote off and on: it also listens on the PC's Tailscale address, and the page shows it (and its MagicDNS name when Tailscale's command line is installed). Nothing is opened to the internet and no router setup is needed.
+3. Pick the address in *Open on the phone* (the Tailscale one when there is one: it works at home and away), press *Pair a phone* and scan the QR code with the phone's camera (or open the address and type the 8 digits). iPhone / iPad: first *Share > Add to Home Screen*, open it from the Home Screen and pair there (the Home Screen app keeps its own storage). Android: *menu > Add to Home screen*.
+4. The PC asks whether to allow the phone (by the name it gave) - say Yes only for a phone you just paired yourself. The pairing is kept for that address only: always open the remote at the same one.
+
+Paired phones are listed with when they were last seen; *Remove* stops one at once.
+
+**Security** - the remote answers only addresses on your home network and Tailscale's (100.64.0.0/10, fd7a:115c:a1e0::/48), and listens only on those adapters. The code works once, for 5 minutes and 3 tries; pairing proves it without sending it (SPAKE2, as linked computers) and then needs a Yes on the PC. Each phone gets its own key (sealed for your Windows user on the PC, in the browser's storage on the phone); every request is signed with it (time, one-time nonce, body hash) and answered signed; replays, unpaired devices, too many requests and repeated bad signatures are refused. A phone can only do the fixed list above - it never names a file, a link or a program. **It is plain http**: over Tailscale the traffic is encrypted by WireGuard; on the home network it isn't - someone on your Wi-Fi who intercepts traffic could see what you tap or change the page and take over the pairing. Prefer the Tailscale address, and use the home one only on a network you trust. HTTPS isn't offered (it needs certificates); for the same reason the app's offline cache (service worker) doesn't run on the phone - it opens like an app from the Home Screen, but needs the PC to be reachable.
+
 ## Setup tab
 
 Where everything is on this PC - found by itself:

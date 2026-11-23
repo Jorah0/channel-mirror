@@ -198,7 +198,7 @@ try:
     raise AssertionError("a link without the token was taken")
 except urllib.error.HTTPError as e:
     assert e.code == 403
-assert app.tabs()[-3:] == ["Link", "Linked computers", "Setup"], app.tabs()  # Setup is the last tab
+assert app.tabs()[-4:] == ["Link", "Linked computers", "Phone remote", "Setup"], app.tabs()  # Setup is the last tab
 print("hand-over to the open app -> Import tab ok")
 
 saved = app.close()

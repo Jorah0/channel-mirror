@@ -10,7 +10,8 @@
 
 Safe by default: Stream Deck is never written (sends are recorded in app.sent), VTube Studio / Stream Deck folders
 point at empty temp folders, received files / backups / now-playing go to temp, servers bind to 127.0.0.1, no link
-hand-over port or token of the real app is touched, nothing plays out loud, no network broadcasts. Every message box
+hand-over port or token of the real app is touched, nothing plays out loud, no network broadcasts; the phone remote
+listens on 127.0.0.1 only and reaches only a fake VTube Studio API (app.vts_ports). Every message box
 is recorded (app.boxes); questions take answers from app.yes / app.picks / app.texts (default: yes / nothing), so a
 test can never hang on a dialog. A callback error inside Tk fails the test (app.errors)."""
 import ctypes
@@ -43,7 +44,7 @@ import channel_mirror as cm  # noqa: E402
 # tab builder -> short name for app.api()
 BUILDERS = {"streamdeck_tab": "soundboard", "sd_editor_tab": "editor", "import_tab": "import", "mover_tab": "mover",
             "recorder_tab": "recorder", "vts_tab": "vts", "music_tab": "music", "link_tab": "link",
-            "setup_tab": "setup", "obs_tab": "obs"}
+            "setup_tab": "setup", "obs_tab": "obs", "remote_tab": "remote"}
 
 
 class FakeOut:
@@ -116,6 +117,13 @@ class App:
         # OBS: only a fake one a test starts (cmlib.selftest.FakeObs; its port into app.obs_ports) - never the real OBS
         self.obs_ports = set()
         cm.ObsClient = safe_obs(cm.ObsClient, self.obs_ports)
+        # the phone remote: 127.0.0.1 only, Tailscale's command line never run, VTube Studio's API only a fake one
+        # (cmlib.selftest.FakeVts; its port into app.vts_ports) - never the real VTube Studio
+        cm.remote_hosts = lambda: ["127.0.0.1"]
+        cm.tailscale_info = lambda: {}
+        self.vts_ports = set()
+        real_vts = cm.vts_api
+        cm.vts_api = lambda port, *a, **k: real_vts(int(port) if int(port) in self.vts_ports else 9, *a, **k)
         # never close or start real programs: taskkill (VTube Studio, Stream Deck) and opening files / steam:// links
         # are recorded in app.launched instead (a test checks them there)
         self.launched = []

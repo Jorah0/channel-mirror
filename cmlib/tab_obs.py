@@ -492,23 +492,29 @@ def obs_tab(page, cfg, hub, music, sounds):
         say(f"Into OBS: {done}.")
         refresh()
 
+    def here(c, a):  # one at a time, the state at most once a second: OBS is never flooded from the link / phones
+        if not remote_lock.acquire(timeout=10):
+            raise ValueError("OBS is busy here - try again")
+        try:
+            if c == "state" and time.monotonic() - cache.get("t", -9.0) < 1.0:
+                return cache["s"]
+            cache.clear()
+            out = obs_here(st["client"], c, a, feed, sounds())
+            if c == "state":
+                cache.update(t=time.monotonic(), s=out)
+            return out
+        finally:
+            remote_lock.release()
+
+    def phone(cmd, args):
+        """This PC's OBS for a paired phone (from the phone remote's server thread): a command of the fixed list."""
+        if st["client"] is None or not st["client"].connected:
+            raise ValueError("OBS isn't connected on the PC - connect it on Channel Mirror's OBS page")
+        return here(cmd, obs_check(cmd, args))
+
     def remote(info):
         """A linked computer's OBS command (from the link server's thread): only if it may, see obs_serve."""
         p = next((x for x in hub["peers"]() if x["id"] == info.get("peer")), None)
-
-        def here(c, a):  # one at a time, the state at most once a second: OBS is never flooded from the link
-            if not remote_lock.acquire(timeout=10):
-                raise ValueError("OBS is busy here - try again")
-            try:
-                if c == "state" and time.monotonic() - cache.get("t", -9.0) < 1.0:
-                    return cache["s"]
-                cache.clear()
-                out = obs_here(st["client"], c, a, feed, sounds())
-                if c == "state":
-                    cache.update(t=time.monotonic(), s=out)
-                return out
-            finally:
-                remote_lock.release()
         r = obs_serve(p, info["cmd"], info["args"], here, rate)
         if info["cmd"] != "state" or not r.get("ok"):
             events.put(("remote", p, info["cmd"], r.get("error")))
@@ -557,6 +563,6 @@ def obs_tab(page, cfg, hub, music, sounds):
         page.after(1500, connect)
     if oc.get("feed_share"):
         page.after(1300, lambda: share_feed(auto=True))
-    return {"remote": remote, "receive": receive, "stop": stop, "save": save, "vars": v, "state": st, "feed": feed,
+    return {"remote": remote, "phone": phone, "receive": receive, "stop": stop, "save": save, "vars": v, "state": st, "feed": feed,
             "control": control, "bar": bar, "scenes": scenes, "sources": srcs, "mixer": mix, "volume": vol_s,
             "outputs": outs, "status": lambda: status.cget("text"), "refresh": refresh}

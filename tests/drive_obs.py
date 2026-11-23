@@ -68,7 +68,8 @@ assert on_disk.startswith("dpapi:") and "pw-old" not in on_disk and cm.secret_re
 assert app.api("obs")["vars"]["password"].get() == "pw-old"
 print("an old plain OBS password: sealed in the settings at start, still filled in")
 app.root.geometry("1400x900+0+0")
-assert app.tabs()[-6:] == ["Music player", "OBS", "Transcribe", "Link", "Linked computers", "Setup"], app.tabs()
+assert app.tabs()[-7:] == ["Music player", "OBS", "Transcribe", "Link", "Linked computers", "Phone remote",
+                          "Setup"], app.tabs()
 page = app.tab("OBS")
 O = app.api("obs")
 v, st = O["vars"], O["state"]

@@ -1759,6 +1759,7 @@ def selftest():
 
         obs_selftest(Path(d), write_wav, t)
         transcribe_selftest(Path(d) / "transcribe")
+        remote_selftest()
 
         # Setup tab: Light / Dark / Follow Windows, then each folder's check and the user's own choice of folder
         assert ui_mode("dark") == "dark" and ui_mode("light") == "light" and ui_mode("odd") == "light"
@@ -2424,3 +2425,368 @@ def transcribe_selftest(d):
         srv.shutdown()
         srv.server_close()
     print("transcribe ok")
+
+
+class FakeVts:
+    """A stand-in for VTube Studio's API (its websocket on 127.0.0.1), for tests only - never the real VTube Studio.
+    The model "Wolf" with two background hotkeys and an animation one. allow = what its Allow / Deny answers;
+    self.triggered = the hotkeys triggered, self.asked = the token requests."""
+    HOTKEYS = [{"name": "Stars", "type": "ChangeBackground", "file": "stars", "hotkeyID": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"},
+               {"name": "Rain", "type": "ChangeBackground", "file": "rain", "hotkeyID": "0f1e2d3c4b5a69788796a5b4c3d2e1f0"},
+               {"name": "Wave", "type": "TriggerAnimation", "file": "wave.motion3.json", "hotkeyID": "77"}]
+
+    def __init__(self, allow=True):
+        import secrets
+        import socket
+        import threading
+        self.allow, self.token, self.triggered, self.asked = allow, "tok-" + secrets.token_hex(8), [], 0
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(8)
+        self.port = self.sock.getsockname()[1]
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def stop(self):
+        self.sock.close()
+
+    def _accept(self):
+        import threading
+        while True:
+            try:
+                c, _ = self.sock.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._serve, args=(c,), daemon=True).start()
+
+    def _serve(self, c):
+        import base64
+        import hashlib
+        buf = [b""]
+
+        def recv(n):
+            while len(buf[0]) < n:
+                got = c.recv(65536)
+                if not got:
+                    raise OSError("closed")
+                buf[0] += got
+            out, buf[0] = buf[0][:n], buf[0][n:]
+            return out
+        try:
+            while b"\r\n\r\n" not in buf[0]:
+                buf[0] += c.recv(4096) or b"\r\n\r\n"
+            head, buf[0] = buf[0].split(b"\r\n\r\n", 1)
+            h = {k.strip().lower(): v.strip() for k, _, v in (x.partition(":") for x in head.decode().split("\r\n")[1:])}
+            acc = base64.b64encode(hashlib.sha1((h["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+                                                .encode()).digest()).decode()
+            c.sendall(f"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                      f"Sec-WebSocket-Accept: {acc}\r\n\r\n".encode())
+            authed = False
+            while True:
+                op, data = ws_read(recv, masked=True)
+                if op == 8:
+                    return
+                m = json.loads(data)
+                t, d, out = m["messageType"], m.get("data") or {}, None
+                if t == "AuthenticationTokenRequest":
+                    self.asked += 1
+                    out = ("AuthenticationTokenResponse", {"authenticationToken": self.token}) if self.allow else (
+                        "APIError", {"errorID": 50, "message": "User has denied API access for your plugin."})
+                elif t == "AuthenticationRequest":
+                    authed = d.get("authenticationToken") == self.token and d.get("pluginName") == "Channel Mirror"
+                    out = ("AuthenticationResponse", {"authenticated": authed, "reason": "ok" if authed else "bad"})
+                elif not authed:
+                    out = ("APIError", {"errorID": 8, "message": "Plugin not authenticated."})
+                elif t == "HotkeysInCurrentModelRequest":
+                    out = ("HotkeysInCurrentModelResponse", {"modelLoaded": True, "modelName": "Wolf",
+                                                             "modelID": "m1", "availableHotkeys": self.HOTKEYS})
+                elif t == "HotkeyTriggerRequest":
+                    if d.get("hotkeyID") in [x["hotkeyID"] for x in self.HOTKEYS]:
+                        self.triggered.append(d["hotkeyID"])
+                        out = ("HotkeyTriggerResponse", {"hotkeyID": d["hotkeyID"]})
+                    else:
+                        out = ("APIError", {"errorID": 101, "message": "Hotkey not found."})
+                else:
+                    out = ("APIError", {"errorID": 2, "message": "Unknown request."})
+                c.sendall(ws_frame(1, json.dumps({"op": 0}).encode(), mask=False))  # (an unrelated message first)
+                c.sendall(ws_frame(1, json.dumps({"apiName": "VTubeStudioPublicAPI", "apiVersion": "1.0",
+                                                  "requestID": m["requestID"], "messageType": out[0],
+                                                  "data": out[1]}).encode(), mask=False))
+        except (OSError, ValueError, KeyError):
+            pass
+        finally:
+            c.close()
+
+
+def remote_call(port, key, dev, cmd, args=None, t=None, nonce=None, body=None, sig=None):
+    """One signed request to a phone remote, as the web app makes it -> (status, headers, parsed reply or text)."""
+    import hashlib
+    import http.client
+    import secrets
+    import time
+    from .peers import peer_sign
+    body = json.dumps({"cmd": cmd, "args": args or {}}).encode() if body is None else body
+    t = int(time.time()) if t is None else t
+    nonce = nonce or secrets.token_hex(16)
+    bh = hashlib.sha256(body).hexdigest()
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    c.request("POST", "/api", body, {"Content-Type": "application/json", "X-Dev": dev, "X-Time": str(t),
+                                     "X-Nonce": nonce, "X-Body": bh,
+                                     "X-Sig": sig or peer_sign(key, "POST", "/api", t, nonce, bh)})
+    r = c.getresponse()
+    data, h = r.read(), dict(r.getheaders())
+    c.close()
+    if r.status in (200, 409):  # answers to a request signed right: signed back (the clock one too)
+        assert h.get("X-Sig") == peer_sign(key, "REPLY", "/api", 0, nonce, hashlib.sha256(data).hexdigest()), h
+        return r.status, h, json.loads(data)
+    return r.status, h, data.decode(errors="replace")
+
+
+def remote_selftest():
+    """The phone remote: the address filter, QR codes (decoded by OpenCV when it's installed), the crypto the web app
+    repeats in JavaScript, the command list, the server (pairing, signatures, replay, rate, lock-out, removal), and
+    VTube Studio's API against a fake one."""
+    import hashlib
+    import http.client
+    import time
+    import cmlib.remote as R
+    from .peers import pair_offer, pair_secret, peer_sign
+    from .remote import (REMOTE_COMMANDS, RemoteServer, qr_ecc, qr_matrix, qr_png, remote_check, remote_icon,
+                         remote_ok, remote_vectors)
+    from .remote_app import remote_files
+    from .vts import vts_api, vts_backgrounds
+    # the address filter: home network, this PC and Tailscale only
+    for ip in ("127.0.0.1", "192.168.1.5", "10.0.0.2", "172.16.3.4", "100.64.0.1", "100.101.102.103",
+               "100.127.255.254", "fd7a:115c:a1e0::1", "fd7a:115c:a1e0:ab12::99", "::1", "::ffff:192.168.1.5",
+               "::ffff:100.64.9.9"):
+        assert remote_ok(ip), ip
+    for ip in ("8.8.8.8", "1.1.1.1", "100.63.255.255", "100.128.0.1", "169.254.1.1", "0.0.0.0", "224.0.0.1",
+               "255.255.255.255", "::ffff:8.8.8.8", "2001:4860:4860::8888", "fe80::1", "::", "", "nonsense",
+               "192.168.1.5.evil", "100.64.0.1/10", None):
+        assert not remote_ok(ip), ip
+    # QR: the standard's own Reed-Solomon example, then codes read back by a real decoder at every version
+    assert qr_ecc([16, 32, 12, 86, 97, 128, 236, 17, 236, 17, 236, 17, 236, 17, 236, 17], 10) == [
+        165, 36, 212, 193, 237, 54, 199, 135, 44, 85]
+    texts = [("http://192.168.1.23:8770/#pair=12345678" * 6)[:n] for n in (1, 14, 26, 42, 62, 84, 106, 122, 152, 180,
+                                                                           213)]
+    sizes = [len(qr_matrix(x)) for x in texts]
+    assert sizes == [21, 21, 25, 29, 33, 37, 41, 45, 49, 53, 57], sizes  # versions 1-10
+    try:
+        qr_matrix("x" * 214)
+        raise AssertionError("too long for version 10 accepted")
+    except ValueError:
+        pass
+    assert qr_png(qr_matrix("hi"), 3)[:8] == b"\x89PNG\r\n\x1a\n"
+    try:
+        import cv2
+    except ImportError:
+        cv2 = None
+        print("QR codes not decoded: OpenCV isn't installed (pip install opencv-python to check them)")
+    if cv2 is not None:
+        det = cv2.QRCodeDetector()
+        for x in texts + ["http://desktop-x.tail1234.ts.net:8770/#pair=00000001"]:
+            a = np.pad(np.array(qr_matrix(x), bool), 4)
+            got = det.detectAndDecode(np.where(np.repeat(np.repeat(a, 6, 0), 6, 1), 0, 255).astype(np.uint8))[0]
+            assert got == x, (x, got)
+        print(f"QR codes: {len(texts) + 1} read back by OpenCV {cv2.__version__} (versions 1-10)")
+    # the crypto the web app does in JavaScript: known answers, and both sides of a pairing agree
+    vec = remote_vectors()
+    assert vec["sha_abc"] == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    assert vec["hmac_fox"] == "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+    xb = int(vec["x_b"], 16)
+    assert pair_secret(vec["code"], "B", xb, int(vec["pub_a"], 16), int(vec["pub_b"], 16), vec["id_a"]) == (
+        vec["secret"], vec["proof_a"], vec["proof_b"])
+    assert remote_vectors() == vec  # nothing random in them
+    files = remote_files()
+    assert set(files) == {"/", "/app.css", "/app.js", "/sw.js", "/manifest.webmanifest", "/icon-180.png",
+                          "/icon-192.png", "/icon-512.png"}, set(files)
+    assert b"__P__" not in files["/app.js"][1] and b"innerHTML" not in files["/app.js"][1]  # text only, never HTML
+    assert len(remote_icon(512)) > 1000 and json.loads(files["/manifest.webmanifest"][1])["display"] == "standalone"
+    # the command list: every command and argument checked, nothing else taken
+    assert remote_check("deck.play", {"id": 3, "rev": "0123456789abcdef", "to": "both"})["to"] == "both"
+    assert remote_check("obs", {"cmd": "scene", "args": {"scene": "BRB"}}) == {"cmd": "scene", "args": {"scene": "BRB"}}
+    assert remote_check("music.volume", {"percent": 40}) == {"percent": 40}
+    for cmd, args in (("shell", {}), ("deck.play", {"id": 3, "rev": "0123456789abcdef"}),
+                      ("deck.play", {"id": True, "rev": "0123456789abcdef", "to": "feed"}),
+                      ("deck.play", {"id": 1000, "rev": "0123456789abcdef", "to": "feed"}),
+                      ("deck.play", {"id": 1, "rev": "../../x", "to": "feed"}),
+                      ("deck.play", {"id": 1, "rev": "0123456789abcdef", "to": "speakers"}),
+                      ("obs", {"cmd": "add_feed", "args": {"scene": "a", "name": "b", "url": "http://x"}}),
+                      ("obs", {"cmd": "feed_play", "args": {"sound": "a.wav"}}),
+                      ("obs", {"cmd": "scene", "args": {"scene": "BRB", "extra": 1}}),
+                      ("obs", {"cmd": "volume", "args": {"input": "Mic", "percent": 101}}),
+                      ("music.seek", {"secs": -1}), ("music.volume", {"percent": "50"}), ("vts.bg", {"id": "a b"}),
+                      ("vts.bg", {"id": "x" * 65}), ("state", {"x": 1}), ("state", []), (None, {})):
+        try:
+            remote_check(cmd, args)
+            raise AssertionError(f"accepted {cmd} {args}")
+        except ValueError:
+            pass
+    assert "state" in REMOTE_COMMANDS and "rec.start" in REMOTE_COMMANDS
+
+    # the server: a phone pairs (SPAKE2 with the one-time code, then this PC allows it), then signed requests only
+    devs, ran, answers = {}, [], []
+
+    def run(dev, cmd, args):
+        ran.append((dev, cmd, args))
+        if cmd == "vts.bg":
+            raise ValueError("no VTube Studio here")
+        return {"echo": cmd}
+
+    def ask(info):
+        ok = answers.pop(0) if answers else False
+        if ok:
+            devs[info["id"]] = info["key"]
+        return {"ok": True} if ok else None
+
+    def post(port, path, d, nonce=""):
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        c.request("POST", path, json.dumps(d).encode(), {"X-Nonce": nonce} if nonce else {})
+        r = c.getresponse()
+        out = (r.status, dict(r.getheaders()), r.read())
+        c.close()
+        return out
+
+    def phone(port, code, dev):
+        """The web app's pairing, in Python -> (status of the finish, key or None)."""
+        import secrets
+        x, pa = pair_offer(code, "A")
+        st_, _, data = post(port, "/pair/start", {"id": dev, "name": "Test\nphone", "pub": f"{pa:x}"})
+        if st_ != 200:
+            return st_, None
+        d = json.loads(data)
+        key, proof_a, proof_b = pair_secret(code, "A", x, pa, int(d["pub"], 16), dev)
+        nonce = secrets.token_hex(16)
+        st_, h, data = post(port, "/pair/finish", {"session": d["session"],
+                                                    "proof": proof_a if d["proof"] == proof_b else "0" * 64}, nonce)
+        if st_ == 200:
+            assert h["X-Sig"] == peer_sign(key, "REPLY", "/pair/finish", 0, nonce, hashlib.sha256(data).hexdigest())
+            assert json.loads(data)["name"] == "PC-test"
+        return st_, key if st_ == 200 else None
+    srv = RemoteServer(["127.0.0.1"], 0, lambda: dict(devs), run, ask, "PC-test")
+    try:
+        port, d1, d2 = srv.port, "11" * 16, "22" * 16
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        c.request("GET", "/")
+        r = c.getresponse()
+        assert r.status == 200 and b"Pair this phone" in r.read() and "frame-ancestors 'none'" in r.getheader(
+            "Content-Security-Policy") and r.getheader("X-Content-Type-Options") == "nosniff"
+        c.request("GET", "/../settings.json")
+        r = c.getresponse()
+        assert r.status == 404 and r.read()
+        c.close()
+        assert phone(port, "12345678", d1) == (403, None)  # no pairing open on the PC
+        code = srv.open_pairing()
+        answers.append(False)
+        assert phone(port, code, d1) == (403, None) and d1 not in devs  # refused on the PC
+        assert phone(port, code, d1) == (403, None)  # and the code is used up
+        code = srv.open_pairing()
+        answers.append(True)
+        st_, key1 = phone(port, code, d1)
+        assert st_ == 200 and devs[d1] == key1 and not answers, st_
+        # 4 pairing tries from this address so far (each start is one guess): one more and pairing is shut out
+        code = srv.open_pairing()
+        assert post(port, "/pair/start", {"id": d2, "name": "x", "pub": "zz"})[0] == 400  # not even a number
+        assert phone(port, "00000000", d2) == (429, None)  # a wrong guess: the 5th try - shut out at once
+        assert post(port, "/pair/start", {"id": d2, "name": "x", "pub": "05"})[0] == 429
+        # a paired phone's signed requests
+        st_, _, out = remote_call(port, key1, d1, "state")
+        assert st_ == 200 and out["ok"] is True and out["echo"] == "state" and abs(out["now"] - time.time()) < 5
+        st_, _, out = remote_call(port, key1, d1, "vts.bg", {"id": "x"})
+        assert st_ == 200 and out["ok"] is False and "VTube" in out["error"]  # its failure, signed and said
+        st_, _, out = remote_call(port, key1, d1, "obs", {"cmd": "add_feed", "args": {}})
+        assert st_ == 200 and out["ok"] is False and ran[-1][1] == "vts.bg"  # refused before running
+        n_ran, nonce = len(ran), "ab" * 16
+        assert remote_call(port, key1, d1, "deck", nonce=nonce)[0] == 200
+        assert remote_call(port, key1, d1, "deck", nonce=nonce)[0] == 403  # the same request again: refused (1)
+        assert remote_call(port, key1, d1, "deck", t=int(time.time()) - 400)[0] == 409  # too old
+        st_, _, out = remote_call(port, key1, d1, "deck", t=srv.started - 1)  # signed before the server started
+        assert st_ == 409 and abs(out["now"] - time.time()) < 5  # the PC's time, signed
+        assert remote_call(port, "00" * 32, d2, "state")[0] == 401  # never paired (2)
+        assert remote_call(port, "00" * 32, d1, "state")[0] == 401  # a wrong key (3)
+        st_, _, text = remote_call(port, key1, d1, "state", body=b'{"cmd": "deck", "args": {}}',
+                                   sig=peer_sign(key1, "POST", "/api", int(time.time()), "cd" * 16, "0" * 64),
+                                   nonce="cd" * 16)
+        assert st_ == 401 and "pair it again" in text  # the body isn't the one signed (4)
+        assert len(ran) == n_ran + 1  # none of them ran
+        del devs[d1]  # removed on the PC: refused at once (5)
+        assert remote_call(port, key1, d1, "state")[0] == 401
+        devs[d1] = key1  # 5 refused from this address: shut out for a minute, even when right
+        st_, _, text = remote_call(port, key1, d1, "state")
+        assert st_ == 429 and "Too many" in text, (st_, text)
+        real = R.remote_ok  # outside the allowed addresses: nothing at all
+        R.remote_ok = lambda ip: False
+        try:
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            c.request("GET", "/")
+            assert c.getresponse().status == 403
+            c.close()
+            assert post(port, "/pair/start", {})[0] == 403
+        finally:
+            R.remote_ok = real
+    finally:
+        srv.stop()
+    # a fresh server: the rate limit per phone; a code good for CODE_STARTS starts only, and only in its time
+    devs.clear()
+    srv = RemoteServer(["127.0.0.1"], 0, lambda: dict(devs), run, ask, "PC-test")
+    try:
+        devs[d1] = "cd" * 32
+        import socket  # one address holding connections open: PER_IP at most, then dropped; others still served
+        held = [socket.create_connection(("127.0.0.1", srv.port), timeout=5) for _ in range(srv.PER_IP)]
+        extra = socket.create_connection(("127.0.0.1", srv.port), timeout=5)
+        try:
+            assert extra.recv(10) == b""
+        except ConnectionError:
+            pass
+        extra.close()
+        for c_ in held:
+            c_.close()
+        time.sleep(0.3)
+        got = [remote_call(srv.port, devs[d1], d1, "deck")[2].get("busy") for _ in range(srv.RATE + 2)]
+        assert not any(got[:srv.RATE]) and all(got[srv.RATE:]), got
+        code = srv.open_pairing()
+        for _ in range(srv.CODE_STARTS):  # someone guessing (each answer only tells them their one guess was wrong)
+            x, pa = pair_offer("99999999", "A")
+            assert post(srv.port, "/pair/start", {"id": d2, "name": "x", "pub": f"{pa:x}"})[0] == 200
+        answers.append(True)
+        assert phone(srv.port, code, d2) == (403, None) and d2 not in devs  # the right code, but its tries are gone
+        answers.clear()
+    finally:
+        srv.stop()
+    srv = RemoteServer(["127.0.0.1"], 0, lambda: dict(devs), run, ask, "PC-test")
+    try:
+        code = srv.open_pairing()
+        srv.code = (code, time.time() - 1, 3)  # ran out
+        answers.append(True)
+        assert phone(srv.port, code, d2) == (403, None) and d2 not in devs
+        answers.clear()
+    finally:
+        srv.stop()
+    # VTube Studio's API (a fake one): allowed once, then background hotkeys listed and triggered
+    fake = FakeVts()
+    try:
+        token = vts_api(fake.port, None, timeout=5)[0]
+        assert token == fake.token and fake.asked == 1
+        got = vts_backgrounds(fake.port, token)
+        assert got["model"] == "Wolf" and [b["name"] for b in got["backgrounds"]] == ["Stars", "Rain"], got
+        vts_api(fake.port, token, [("HotkeyTriggerRequest", {"hotkeyID": got["backgrounds"][1]["id"]})])
+        assert fake.triggered == [FakeVts.HOTKEYS[1]["hotkeyID"]]
+        for bad in ("wrong", ""):
+            try:
+                vts_backgrounds(fake.port, bad)
+                raise AssertionError("a wrong token was taken")
+            except OSError as e:
+                assert "allow it again" in str(e), e
+        fake.allow = False
+        try:
+            vts_api(fake.port, None, timeout=5)
+            raise AssertionError("denied, yet a token")
+        except OSError as e:
+            assert "denied" in str(e), e
+    finally:
+        fake.stop()
+    try:
+        vts_api(fake.port, "x", timeout=2)  # not running
+        raise AssertionError("no VTube Studio, yet an answer")
+    except OSError as e:
+        assert "isn't running" in str(e) or "in time" in str(e), e
+    print("phone remote ok")

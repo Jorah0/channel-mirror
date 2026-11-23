@@ -242,7 +242,7 @@ print("soundboard: files + folder onto a key + export ok")
 # E) every tab shown, then the window's close button (the editor's unsent changes thrown away when it asks)
 want = ["Channel Mirror", "Stream Deck soundboard", "Stream Deck editor", "Import to folders", "Key mover",
         "Screen recorder", "VTube Studio backgrounds", "Music player", "OBS", "Transcribe", "Link",
-        "Linked computers", "Setup"]
+        "Linked computers", "Phone remote", "Setup"]
 assert app.tabs() == want, app.tabs()
 for name in want:
     assert app.tab(name).winfo_viewable(), name

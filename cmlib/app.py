@@ -63,6 +63,7 @@ from .tab_setup import setup_tab
 from .tab_music import music_tab
 from .tab_obs import obs_tab
 from .tab_transcribe import transcribe_tab
+from .tab_remote import remote_tab
 
 
 # the main window's pages, in the notebook's order (its tab names, which settings and tests use): one line each
@@ -78,6 +79,7 @@ PAGES = (("Channel Mirror", "Route one audio channel to both sides, left or righ
          ("Transcribe", "What's said in videos and audio files, as a document, subtitles or text. Nothing is uploaded."),
          ("Link", "channelmirror:// links, and files from other devices on your home network."),
          ("Linked computers", "Two Channel Mirrors paired: work on each other's Stream Deck, OBS and files."),
+         ("Phone remote", "Your phone or tablet as a remote: soundboard, OBS, music, recorder - at home or anywhere."),
          ("Setup", "Appearance, and where Channel Mirror finds things on this PC."))
 
 
@@ -87,7 +89,7 @@ NAV = (("Audio", (("Channel Mirror", "mirror"), ("Music player", "music"), ("Tra
                         ("Import to folders", "import"), ("Key mover", "mover"))),
        ("Capture", (("Screen recorder", "recorder"), ("VTube Studio backgrounds", "vts"))),
        ("Broadcast", (("OBS", "obs"),)),
-       ("Connect", (("Link", "link"), ("Linked computers", "peers"))),
+       ("Connect", (("Link", "link"), ("Linked computers", "peers"), ("Phone remote", "phone"))),
        (None, (("Setup", "setup"),)))
 
 
@@ -132,8 +134,9 @@ def gui():
         nb.add(pages[text], text=text)
         ui_page(pages[text], text, desc)
     (page, sd_page, ed_page, imp_page, mv_page, rec_page, vts_page, mus_page, obs_page, tr_page, link_page, peers_page,
-     setup_page) = pages.values()
-    statusbar, status_put = ui_statusbar(root, ("peers", "obs", "feeds", "rec", "deck"), f"Channel Mirror {VERSION}")
+     phone_page, setup_page) = pages.values()
+    statusbar, status_put = ui_statusbar(root, ("peers", "phone", "obs", "feeds", "rec", "deck"),
+                                         f"Channel Mirror {VERSION}")
     statusbar.pack(side="bottom", fill="x")
     ttk.Frame(root, style="Line.TFrame", height=1).pack(side="bottom", fill="x")  # hairlines, not etched
     side = ui_sidebar(root, nb, NAV, cfg)
@@ -353,6 +356,8 @@ def gui():
     hub = linker["hub"]
     obs = obs_tab(obs_page, cfg, hub, music, lambda: [Path(s["path"]) for s in list(sd_save.sounds)])
     provide["obs"] = obs["remote"]  # a linked computer's OBS commands (only if it may)
+    phones = remote_tab(phone_page, cfg, {"music": music, "obs": obs, "recorder": recorder, "sound": sd_save,
+                                          "editor": editor, "name": lambda: linker["vars"]["device"].get()})
     handed = queue.Queue()  # Send to > Channel Mirror (linked computers) while the app is open: its files
     handover = link_handover_serve(  # links clicked while the app is open come here (both from this PC only)
         lambda text: handed.put(text) if text.startswith(LINK_TO_PEER + "\n") else linker["open_link"](text))
@@ -763,6 +768,9 @@ def gui():
             n, o = len(hub["peers"]()), obs["state"]
             status_put("peers", "peers", f"{n} linked computer{'s' * (n != 1)}" if n else "No linked computers",
                        "On" if n else "Off", lambda: nb.select(peers_page))
+            ps = phones["state"]["server"]
+            status_put("phone", "phone", f"Phone remote on ({len(phones['devices'])} paired)" if ps else None, "On",
+                       lambda: nb.select(phone_page))
             status_put("obs", "obs", *(((f"OBS on {o['peer']['name']}", "Remote") if o["peer"] else
                                         ("OBS connected", "On") if o["client"] and o["client"].connected else
                                         ("OBS not connected", "Off"))), lambda: nb.select(obs_page))
@@ -783,7 +791,7 @@ def gui():
     names = [nb.tab(t, "text") for t in nb.tabs()]
     last = cfg.get("tab", 0)  # the tab's name; a number from 2.1 and older (their tabs had no Music player)
     if isinstance(last, int):
-        old = [n for n in names if n != "Music player"]
+        old = [n for n in names if n not in ("Music player", "Phone remote")]
         last = old[last] if 0 <= last < len(old) else names[0]
     nb.select(names.index(last) if last in names else 0)
 
@@ -812,6 +820,7 @@ def gui():
         close_now()
 
     def close_now():
+        phones["stop"]()  # phones can't start anything while it closes
         recorder["stop_now"]()  # a recording still running is finished properly first
         recorder["save"]()
         vtube["save"]()

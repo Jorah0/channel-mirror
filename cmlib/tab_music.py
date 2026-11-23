@@ -548,4 +548,4 @@ def music_tab(page, cfg):
             "songs": lambda: [Path(s["path"]) for p in lists for s in p["songs"] if not s.get("m3u")],
             "files": lambda: [Path(s["path"]) for s in cur()["songs"]], "name": lambda: cur()["name"], "stop": close,
             "save": save, "vars": v, "state": st, "engine": eng, "now": now, "lists": lists, "play": play,
-            "pause": pause, "share": share, "tree": stv, "playlists": ptv, "status": lambda: status.cget("text")}
+            "pause": pause, "play_at": play_at, "skip": skip, "halt": stop, "share": share, "tree": stv, "playlists": ptv, "status": lambda: status.cget("text")}
