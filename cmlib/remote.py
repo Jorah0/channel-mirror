@@ -4,7 +4,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from .core import NO_WINDOW
+from .core import BUNDLE, NO_WINDOW, ROOT
 from .link import link_lan_ip, link_private
 from .obs import _num, _one, obs_check
 from .peers import PAIR_Q, pair_code, pair_offer, pair_point, pair_pub, pair_secret, \
@@ -275,7 +275,129 @@ def remote_vectors():
             "proof_a": proof_a, "proof_b": proof_b}
 
 
+# --- the Android app (CM Remote, android/ + build-apk.ps1): a WebView shell that keeps the web app's files itself, so
+# they're updated from the paired PC (signed answers) and the APK too (only to paired phones, in signed parts)
+APK_NAME = "ChannelMirror-Remote.apk"  # + APK_NAME.json: {"code", "name"} (build-apk.ps1 writes both)
+APK_DIRS = [BUNDLE, ROOT / "dist"]  # the exe's own copy (build.ps1 bundles it), then a build's
+APK_PART = 3 * 65536  # bytes per signed answer (a multiple of 3: the parts' base64 joined is the whole file's)
+
+
+def remote_apk_version(version, build):
+    """The app's VERSION ("2.2") and a build number (1-9999) -> Android's (versionCode, versionName): 2020007, "2.2.7".
+    A newer version or build always has a higher code. ValueError for anything else."""
+    m = re.fullmatch(r"(\d{1,2})\.(\d{1,2})", str(version))
+    if not m or not isinstance(build, int) or not 1 <= build <= 9999:
+        raise ValueError(f"Not a version for the Android app: {version!r} build {build!r}")
+    return int(m[1]) * 1000000 + int(m[2]) * 10000 + build, f"{int(m[1])}.{int(m[2])}.{build}"
+
+
+def remote_apk_name(code):
+    return f"{code // 1000000}.{code // 10000 % 100}.{code % 10000}"
+
+
+def remote_apk():
+    """The Android app this PC offers: {"path", "code", "name", "size", "sha256", "parts"} from the first of APK_DIRS
+    that has it (and its .json), or None."""
+    import hashlib
+    for d in APK_DIRS:
+        p, j = Path(d) / APK_NAME, Path(d) / (APK_NAME + ".json")
+        try:
+            k = tuple((s.st_mtime_ns, s.st_size) for s in (p.stat(), j.stat())) + (str(p),)
+            if k not in _APK:  # read and hashed once per build (the state, every 1.5 s, asks for it)
+                info, data = json.loads(j.read_text(encoding="utf-8")), p.read_bytes()
+                code = info.get("code") if isinstance(info, dict) else None
+                ok = isinstance(code, int) and not isinstance(code, bool) and 0 < code < 2 ** 31 and data
+                _APK.clear()
+                cert = str(info.get("cert", "")) if isinstance(info, dict) else ""
+                cert = cert if re.fullmatch(r"[0-9a-f]{64}", cert) else ""  # its signing key (shown on the PC page)
+                _APK[k] = {"path": p, "code": code, "name": remote_apk_name(code), "size": len(data), "cert": cert,
+                           "sha256":
+                           hashlib.sha256(data).hexdigest(), "parts": -(-len(data) // APK_PART)} if ok else None
+        except (OSError, ValueError):
+            continue
+        if _APK[k]:
+            return dict(_APK[k])
+    return None
+
+
+_APK: dict = {}
+
+
+def remote_web(data=False):
+    """The web app's files as the Android app keeps them: {"version", "files": {path: {"type", "sha256"}}} (+ "data",
+    base64, with data=True). The version is the first 16 hex of the SHA-256 of the {path: sha256} list."""
+    import base64
+    import hashlib
+    from .remote_app import remote_files
+    if not data and _WEB:  # (the web app's files never change while it runs; asked on every state poll)
+        return json.loads(_WEB[0])
+    files = {p: {"type": t, "sha256": hashlib.sha256(b).hexdigest(), **({"data": base64.b64encode(b).decode()}
+                                                                       if data else {})}
+             for p, (t, b) in remote_files().items()}
+    man = json.dumps({p: f["sha256"] for p, f in files.items()}, sort_keys=True, separators=(",", ":"))
+    out = {"version": hashlib.sha256(man.encode()).hexdigest()[:16], "files": files}
+    if not data:
+        _WEB[:] = [json.dumps(out)]
+    return out
+
+
+_WEB: list = []
+
+
+def remote_export_web(folder):
+    """The web app's files into folder as the APK carries them (build-apk.ps1): manifest.json and each file named by
+    its SHA-256 -> the version."""
+    import base64
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    w = remote_web(True)
+    for f in w["files"].values():
+        (folder / f["sha256"]).write_bytes(base64.b64decode(f.pop("data")))
+    (folder / "manifest.json").write_text(json.dumps(w), encoding="utf-8")
+    return w["version"]
+
+
+def remote_versions():
+    """What this PC announces to phones (in the signed state): {"web": version, "apk": versionCode or 0}."""
+    return {"web": remote_web()["version"], "apk": (remote_apk() or {}).get("code", 0)}
+
+
+def remote_app_behind(phone, pc):
+    """True when a phone's app ({"web", "apk"}) is older than this PC's APK, or its screens aren't this PC's."""
+    return bool(pc["apk"] and phone["apk"] < pc["apk"] or phone["web"] != pc["web"])
+
+
+def remote_app_label(phone, pc):
+    """The Paired phones list's App column: "browser" (the web app in a browser), or the Android app's version."""
+    if not phone or not phone.get("apk"):
+        return "browser"
+    return remote_apk_name(phone["apk"]) + (" - update available" if remote_app_behind(phone, pc) else "")
+
+
+def remote_update(cmd, args):
+    """A paired phone's app.* command (checked by remote_check) -> its answer (the server signs it)."""
+    import base64
+    if cmd == "app.check":
+        a = remote_apk()
+        return {"web": remote_web()["version"], "apk": {k: a[k] for k in ("code", "name", "size", "sha256", "parts")}
+                if a else None}
+    if cmd == "app.web":
+        return remote_web(True)
+    a = remote_apk()
+    if not a or args["part"] >= a["parts"]:
+        raise ValueError("That part of the Android app isn't here (was it rebuilt?) - check for updates again")
+    with open(a["path"], "rb") as f:
+        f.seek(args["part"] * APK_PART)
+        return {"part": args["part"], "data": base64.b64encode(f.read(APK_PART)).decode()}
+
+
 # --- what a paired phone may ask: a fixed list, every argument checked (OBS commands: obs_check's own list)
+def _web(x):
+    if not isinstance(x, str) or not re.fullmatch(r"[0-9a-f]{0,16}", x):
+        raise ValueError("Not a version")
+    return x
+
+
 def _id(x):
     if not isinstance(x, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", x):
         raise ValueError("Not an id")
@@ -296,7 +418,8 @@ REMOTE_COMMANDS = {
     "music.list": {"list": _num(0, 999)}, "music.play": {"list": _num(0, 999), "song": _num(0, 99999)},
     "music.pause": {}, "music.resume": {}, "music.next": {}, "music.prev": {}, "music.stop": {},
     "music.seek": {"secs": _num(0, 86400)}, "music.volume": {"percent": _num(0, 100)},
-    "rec.start": {}, "rec.stop": {}, "vts.bg": {"id": _id}}
+    "rec.start": {}, "rec.stop": {}, "vts.bg": {"id": _id},
+    "app.check": {"web": _web, "apk": _num(0, 2 ** 31 - 1)}, "app.web": {}, "app.apk": {"part": _num(0, 9999)}}
 
 
 def remote_check(cmd, args):
@@ -416,6 +539,12 @@ class RemoteServer:
                 self.deadline.cancel()
                 if not remote_ok(self.client_address[0]):
                     return self.reply(403, "Only your own devices (home network or Tailscale) can open this.")
+                if self.path == "/app.apk":  # the Android app's first install (later ones: app.apk, signed)
+                    a = remote_apk()
+                    if not a:
+                        return self.reply(404, "The Android app isn't built on this PC (build-apk.ps1).")
+                    return self.reply(200, a["path"].read_bytes(), "application/vnd.android.package-archive",
+                                      extra=(("Content-Disposition", f'attachment; filename="{APK_NAME}"'),))
                 f = files.get(self.path)
                 if not f:
                     return self.reply(404, "Not found")
@@ -521,6 +650,10 @@ class RemoteServer:
                     d = self.fields(data, ("cmd", "args"))
                     args = remote_check(d["cmd"], d["args"])
                     out = {"ok": True, **(server.run(dev, d["cmd"], args) or {})}
+                    if d["cmd"].startswith("app."):  # the app's updates (run() only notes them)
+                        out.update(remote_update(d["cmd"], args))
+                    elif d["cmd"] == "state":
+                        out["app"] = remote_versions()
                 except Exception as e:  # refused or failed: said, never half-done silently
                     out = {"ok": False, "error": str(e)[:300] or type(e).__name__}
                 out["now"] = int(time.time())

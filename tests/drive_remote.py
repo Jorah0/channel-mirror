@@ -1,4 +1,4 @@
-"""The phone remote through the whole app (harness.App) and the REAL web app in a REAL browser: Microsoft Edge, headless,
+﻿"""The phone remote through the whole app (harness.App) and the REAL web app in a REAL browser: Microsoft Edge, headless,
 driven over its DevTools protocol (a websocket, stdlib only), as a phone (412 x 915, touch, an Android user agent).
 Everything on 127.0.0.1: the remote (harness: remote_hosts), Edge's DevTools port, a FAKE OBS (cmlib.selftest.FakeObs)
 and a FAKE VTube Studio API (FakeVts) - the real ones are never touched; the recorder runs a stand-in for ffmpeg; the
@@ -7,10 +7,14 @@ Covers: turning it on (127.0.0.1 only), Pair a phone (the QR code read back by O
 crypto = Python's (same vectors), pairing refused on the PC then allowed, the Deck (soundboard sounds into the OBS feed
 / on this PC / both, Stop all, then a Stream Deck page's sound keys), OBS (scenes, a source, mute, volume, recording),
 Music (play a song, pause, next, volume, seek, stop), Capture (record / stop; VTube Studio allowed on the PC, its
-backgrounds listed and switched), a replayed request refused, an unpaired device refused, removing the phone on the PC
-(it shows it's not paired), the pairing kept sealed in the settings.
+backgrounds listed and switched), the Android app's updates (Edge as its WebView, a stand-in window.CMShell for its
+Java side: screens updated by themselves, a tampered file / an answer not signed by the PC refused, a newer APK fetched
+in signed parts and handed over with the right hash; the PC page's App column; Get the Android app), a replayed
+request refused, an unpaired device refused, removing the phone on the PC (it shows it's not paired), the pairing kept
+sealed in the settings.
 Usage: python -u drive_remote.py <repo>"""
 import base64
+import hashlib
 import json
 import os
 import shutil
@@ -18,6 +22,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 import wave
@@ -27,6 +32,7 @@ from urllib.parse import urlsplit
 from harness import App
 
 import numpy as np
+import cmlib.remote as RM
 from cmlib.obs import ws_frame, ws_read
 from cmlib.selftest import FakeObs, FakeVts, remote_call
 
@@ -180,7 +186,8 @@ try:
             raise AssertionError(f"timed out: {what} | PC status {Rm['status']()!r} | phone "
                                  f"{js('document.getElementById(`conn`).textContent')!r} "
                                  f"{js('document.getElementById(`pairmsg`).textContent')!r} "
-                                 f"{js('document.getElementById(`toast`).textContent')!r} | errors {app.errors[-2:]}")
+                                 f"{js('document.getElementById(`toast`).textContent')!r} "
+                                 f"{js('document.getElementById(`appmsg`).textContent')!r} | errors {app.errors[-2:]}")
 
     def click(sel, text=None):
         ok = js(f"(() => {{ const e = [...document.querySelectorAll({json.dumps(sel)})].find(x => {json.dumps(text)} "
@@ -325,6 +332,101 @@ try:
     click("#bgs .tile", "Rain")
     must(lambda: fake_vts.triggered == [FakeVts.HOTKEYS[1]["hotkeyID"]], 10, "background switched")
     print("Capture: recording started / stopped from the phone; VTube Studio backgrounds listed and switched")
+
+    # the Android app (CM Remote): Edge stands in for its WebView, window.CMShell for the app's side (it records what
+    # the app would be given: the Java side itself needs a phone). Its screens are older than the PC's: updated by
+    # themselves, checked; a tampered file and an answer not signed by the PC refused; then a newer APK announced:
+    # downloaded in signed parts, its hash checked, handed to the app to install
+    web_v = cm.remote_web()["version"]
+    # (the steps above can make 30+ signed requests within seconds: let the remote's 40-per-10-s limit per phone,
+    # RemoteServer.RATE, drain first - it would refuse the update's requests as "too many at once", as it should)
+    must(lambda: len(srv.hits.get(d["id"], [])) < 10, 20, "the rate window drained")
+    cm.APK_DIRS = [tmp / "no-apk"]  # (this PC hasn't built the Android app yet)
+    cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source": """(() => {
+      const K = "fakeShell", get = () => JSON.parse(localStorage.getItem(K) ||
+        '{"web": "0000000000000000", "apk": 2020001, "saved": [], "apks": []}'), put = x => localStorage.setItem(K, JSON.stringify(x));
+      window.CMShell = {
+        info() { const x = get(); return JSON.stringify({web: x.web, apk: x.apk, name: "2.2.1"}); },
+        saveWeb(json) { const x = get(), u = JSON.parse(json); x.saved.push(u.version); x.web = u.version; put(x); return ""; },
+        installApk(b64, sha) { const x = get(); x.apks.push({b64, sha}); put(x); setTimeout(() => CMRemote.shell("progress", "Installing (test)"), 0); },
+        forget() { const x = get(); x.forgot = true; put(x); }};
+    })();"""})
+
+    def fake(k):
+        return js(f"(JSON.parse(localStorage.getItem('fakeShell') || '{{}}'))[{json.dumps(k)}]")
+
+    def fake_web(v):
+        js(f"(() => {{ const x = JSON.parse(localStorage.getItem('fakeShell')); x.web = '{v}'; "
+           "localStorage.setItem('fakeShell', JSON.stringify(x)); })()")
+    cdp.call("Page.reload")
+    must(lambda: fake("web") == web_v, 30, "the app's screens updated from the PC by themselves")
+    assert fake("saved") == [web_v]
+    click("#tabs button", "Capture")
+    must(lambda: js("document.getElementById('appmsg').textContent") == "Up to date.", 15, "up to date after it")
+    assert not js("document.getElementById('appbox').hidden") and js("document.body.classList.contains('shell')")
+    must(lambda: Rm["devices"][0].get("app") == {"web": web_v, "apk": 2020001}, 10, "the PC knows its version")
+    must(lambda: Rm["tree"].set(d["id"], "app") == "2.2.1", 15, "the App column")
+    cdp.shot("7 app up to date")
+    real_web = cm.remote_web
+
+    def tampered(data=False):  # one file changed after its hash was listed (as if altered on the way)
+        w = real_web(data)
+        if data:
+            f = w["files"]["/app.css"]
+            f["data"] = base64.b64encode(base64.b64decode(f["data"]) + b"/* changed */").decode()
+        return w
+    cm.remote_web = tampered
+    try:
+        fake_web("1" * 16)
+        click("#appbtn")
+        must(lambda: "isn't the one the PC listed" in js("document.getElementById('appmsg').textContent"), 15,
+             "a tampered file refused")
+        assert fake("saved") == [web_v] and fake("web") == "1" * 16
+    finally:
+        cm.remote_web = real_web
+    here_tl, real_sign, real_update = threading.local(), RM.peer_sign, RM.remote_update
+
+    def update_marked(cmd, args):  # the web bundle's answer gets a signature that isn't the PC's
+        here_tl.bad = cmd == "app.web"
+        return real_update(cmd, args)
+
+    def sign_spoiled(key, method, *a):
+        if method == "REPLY" and getattr(here_tl, "bad", False):
+            here_tl.bad = False
+            return "0" * 64
+        return real_sign(key, method, *a)
+    RM.remote_update, RM.peer_sign = update_marked, sign_spoiled
+    try:
+        click("#appbtn")
+        must(lambda: "wasn't signed by your PC" in js("document.getElementById('appmsg').textContent"), 15,
+             "an answer not signed by the PC refused")
+        assert fake("saved") == [web_v]
+    finally:
+        RM.remote_update, RM.peer_sign = real_update, real_sign
+    click("#appbtn")  # the real one: applied
+    must(lambda: fake("web") == web_v and fake("saved") == [web_v, web_v], 20, "applied when it's right")
+    print("Android app (its page side, in Edge): screens updated by themselves, checked; a tampered file and an answer "
+          "not signed by the PC refused")
+    # a newer APK built on the PC: announced in the signed state, fetched by the phone, handed to the app
+    apk_dir = tmp / "apk"
+    apk_dir.mkdir()
+    apk = os.urandom(cm.APK_PART * 2 + 777)
+    (apk_dir / cm.APK_NAME).write_bytes(apk)
+    (apk_dir / (cm.APK_NAME + ".json")).write_text(json.dumps({"code": 2020009, "name": "2.2.9"}))
+    cm.APK_DIRS = [apk_dir]
+    must(lambda: len(fake("apks") or []) == 1, 30, "the new APK handed to the app")
+    got = fake("apks")[0]
+    assert got["sha"] == hashlib.sha256(apk).hexdigest() and base64.b64decode(got["b64"]) == apk
+    must(lambda: "Installing (test)" in js("document.getElementById('appmsg').textContent"), 10, "the app's word shown")
+    must(lambda: Rm["tree"].set(d["id"], "app") == "2.2.1 - update available", 15, "the PC shows it's behind")
+    assert remote_call(srv.port, "ab" * 32, "cd" * 16, "app.apk", {"part": 0})[0] == 401  # never to others
+    with urllib.request.urlopen(f"http://127.0.0.1:{srv.port}/app.apk", timeout=10) as r:  # the first install's link
+        assert r.read() == apk
+    app.button("Get the Android app", page).invoke()
+    app.pump(0.2)
+    assert Rm["vars"]["code"].get() == f"http://127.0.0.1:{srv.port}/app.apk" and str(Rm["qr"].cget("image"))
+    print("Android app: a newer APK announced, downloaded in signed parts (3), its hash right, handed to the app to "
+          "install; the PC page shows the phone's version, update available; Get the Android app shows its link")
 
     # a request heard on the network and sent again: refused; a device that was never paired: refused
     key, dev = d["key"], d["id"]

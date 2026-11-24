@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- CM Remote: Channel Mirror's phone remote as an Android app. Built by build-apk.ps1 (no Gradle); versionCode /
+     versionName / min + target SDK are set there. Permissions: the network (the PC) and installing its own updates. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="io.github.jorah0.cmremote">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- cleartext: the remote is plain http on the home network / Tailscale; the app itself refuses every address but
+         the paired PC's (MainActivity.serve), so this can't be narrowed here (private ranges aren't expressible) -->
+    <application android:label="CM Remote" android:icon="@mipmap/ic_launcher" android:allowBackup="false"
+        android:fullBackupContent="false" android:usesCleartextTraffic="true" android:supportsRtl="true"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+        <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <receiver android:name=".Events" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+        <!-- no trackers: the WebView sends nothing to Google (usage metrics, Safe Browsing look-ups of the PC's address) -->
+        <meta-data android:name="android.webkit.WebView.MetricsOptOut" android:value="true" />
+        <meta-data android:name="android.webkit.WebView.EnableSafeBrowsing" android:value="false" />
+    </application>
+</manifest>

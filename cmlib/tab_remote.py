@@ -11,8 +11,8 @@ from .deck import sd_sounds, sd_title
 from .link import link_public_network
 from .music import MusicOut, SoundFeed, music_title
 from .peers import PEER_ASK, peer_name
-from .remote import REMOTE_PORT, RemoteServer, qr_matrix, qr_png, remote_hosts, remote_tailnet, remote_url, \
-    tailscale_info
+from .remote import REMOTE_PORT, RemoteServer, qr_matrix, qr_png, remote_apk, remote_app_label, remote_hosts, \
+    remote_tailnet, remote_url, remote_versions, tailscale_info
 from .vts import VTS_API_PORT, vts_api, vts_backgrounds
 from .ui import Tip, px, ui_background, ui_empty
 
@@ -34,15 +34,18 @@ def remote_tab(page, cfg, parts):
     for d in rc.get("devices") or []:
         key = secret_read(d.get("key")) if isinstance(d, dict) else None
         if key and re.fullmatch(r"[0-9a-f]{64}", key) and re.fullmatch(r"[0-9a-f]{32}", str(d.get("id", ""))):
+            app = d.get("app") if isinstance(d.get("app"), dict) else {}
             devices.append({"id": d["id"], "name": peer_name(d.get("name", ""), 40) or "Phone", "key": key,
-                            "since": float(d.get("since") or 0), "seen": float(d.get("seen") or 0)})
+                            "since": float(d.get("since") or 0), "seen": float(d.get("seen") or 0),
+                            "app": {"web": str(app.get("web", ""))[:16], "apk": app["apk"]}
+                            if isinstance(app.get("apk"), int) else None})
         else:  # sealed for another Windows user / PC, or damaged: that phone pairs again
             unread += 1
     calls = queue.Queue()  # work for this window's thread, from the server's
     here, lock = SoundFeed(), threading.Lock()  # sounds a phone plays on this PC's own output
     tok = secret_read(rc.get("vts_token")) or ""
     st = {"server": None, "deck": ("0" * 16, []), "choices": {}, "vts": (0.0, {}), "ts": {}, "out": None,
-          "idle": 0.0, "code": None, "img": None, "urls": {}, "vts_tok": tok, "n": 0, "nonces": {},
+          "idle": 0.0, "code": None, "get": False, "img": None, "urls": {}, "vts_tok": tok, "n": 0, "nonces": {},
           "vts_port": int(rc.get("vts_port") or VTS_API_PORT), "here_playing": here.playing}
     v = {"port": tk.StringVar(value=str(rc.get("port", REMOTE_PORT))), "addr": tk.StringVar(),
          "deck": tk.StringVar(value=rc.get("deck") or DECK_SB), "vts_port": tk.StringVar(value=str(st["vts_port"])),
@@ -117,16 +120,22 @@ def remote_tab(page, cfg, parts):
     ttk.Label(pf, textvariable=v["code"], style="Name.TLabel", anchor="center").pack(fill="x")
     hint(pf, "Scan the code with the phone's camera (or open the address and type the code). The PC asks you to "
              "allow it. Don't show the code on stream or in a screen share. iPhone: Share > Add to Home Screen first, open it from there, and pair there. Android: "
-             "menu > Add to Home screen.")
+             "the app below, or menu > Add to Home screen.")
+    get_b = ttk.Button(pf, text="Get the Android app", style="Tool.TButton", command=lambda: get_app())
+    get_b.pack(anchor="w", pady=(8, 0))
+    Tip(get_b, "A QR code for the phone's camera: it downloads the app (CM Remote) from this PC")
+    hint(pf, "Android: the phone's browser downloads it (best over the Tailscale address: encrypted); allow that "
+             "browser to install unknown apps when Android asks (once). Open CM Remote, check its signing key matches "
+             "the one said below, type the address above, then pair it with a code. It updates itself from this PC.")
 
     # the paired phones; Tailscale
     lf = box(cols[2], "Paired phones", grow=True)
     r = ttk.Frame(lf)
     r.pack(side="bottom", fill="x", pady=(4, 0))
     ttk.Button(r, text="Remove", style="Tool.TButton", command=lambda: remove()).pack(side="left")
-    tree = ttk.Treeview(lf, columns=("name", "since", "seen"), show="headings", height=3, selectmode="browse")
+    tree = ttk.Treeview(lf, columns=("name", "since", "seen", "app"), show="headings", height=3, selectmode="browse")
     ui_empty(tree, "No phone paired yet.")
-    for c, h, w in (("name", "Phone", 110), ("since", "Paired", 70), ("seen", "Last seen", 95)):
+    for c, h, w in (("name", "Phone", 100), ("since", "Paired", 60), ("seen", "Last seen", 80), ("app", "App", 110)):
         tree.heading(c, text=h)
         tree.column(c, width=px(w), stretch=c == "name")
     tree.pack(fill="both", expand=True)
@@ -204,6 +213,13 @@ def remote_tab(page, cfg, parts):
             return ui(lambda: music(cmd, a, who))
         if cmd.startswith("rec."):
             return ui(lambda: rec(cmd, who))
+        if cmd.startswith("app."):  # the server answers these; noted here: its version, an update going on
+            if cmd == "app.check" and d:
+                d["app"] = dict(a)
+                calls.put((show_devices, {"late": False}, threading.Event()))  # its version shown now
+            elif cmd == "app.web" or a.get("part") == 0:
+                note(f"{who} is updating its app")
+            return {}
         if cmd == "vts.bg":
             bgs = {b["id"]: b["name"] for b in vts_state().get("backgrounds") or []}
             if a["id"] not in bgs:
@@ -420,23 +436,39 @@ def remote_tab(page, cfg, parts):
             if not st["server"]:
                 return
         code = st["server"].open_pairing()
-        st["code"] = (code, time.time() + st["server"].CODE_SECS)
+        st["code"], st["get"] = (code, time.time() + st["server"].CODE_SECS), False
         show_qr()
         say("Scan the code with the phone (it works once, for 5 minutes).")
 
+    def get_app():
+        if not st["server"]:
+            toggle()
+            if not st["server"]:
+                return
+        a = remote_apk()
+        if not a:
+            return say("The Android app isn't built on this PC: run build-apk.ps1 (see README), then press this again.")
+        clear_code()
+        st["get"] = True
+        show_qr()
+        c = a["cert"]
+        say(f"Scan it with the Android phone's camera: it downloads CM Remote {a['name']} from this PC. Its first "
+            "screen shows its signing key: it must read " + (" ".join(c[i:i + 4] for i in range(0, 16, 4)) if c else
+                                                              "(unknown - rebuild it with build-apk.ps1)") + ".")
+
     def show_qr(*_):
         url, c = st["urls"].get(v["addr"].get()), st["code"]
-        if not c or not url:
+        if not url or not (c or st["get"]):
             qr.configure(image="")
             st["img"] = None
             return v["code"].set("")
-        m = qr_matrix(f"{url}#pair={c[0]}")
+        m = qr_matrix(f"{url}#pair={c[0]}" if c else f"{url}app.apk")
         st["img"] = tk.PhotoImage(master=page, data=base64.b64encode(qr_png(m, max(2, px(200) // (len(m) + 8)))))
         qr.configure(image=st["img"])
-        v["code"].set(f"{c[0][:4]} {c[0][4:]}")
+        v["code"].set(f"{c[0][:4]} {c[0][4:]}" if c else f"{url}app.apk")
 
     def clear_code():
-        st["code"] = None
+        st["code"], st["get"] = None, False
         if st["server"]:
             st["server"].close_pairing()
         show_qr()
@@ -451,9 +483,10 @@ def remote_tab(page, cfg, parts):
     def show_devices():
         sel = tree.selection()
         tree.delete(*tree.get_children())
+        pc = remote_versions()
         for d in devices:
             tree.insert("", "end", iid=d["id"], values=(d["name"], time.strftime("%d %b", time.localtime(d["since"])),
-                                                       ago(d["seen"])))
+                                                       ago(d["seen"]), remote_app_label(d.get("app"), pc)))
         if sel and tree.exists(sel[0]):
             tree.selection_set(sel[0])
 
@@ -574,6 +607,7 @@ def remote_tab(page, cfg, parts):
     if rc.get("on"):  # on when the app closed: on again
         page.after(1600, lambda: toggle(auto=True))
     return {"stop": stop, "save": save, "toggle": toggle, "pair": pair, "remove": remove, "vars": v, "state": st,
+            "get_app": get_app,
             "devices": devices, "tree": tree, "look": look, "allow_vts": allow_vts, "deck": deck_list,
             "choices": choices, "qr": qr,
             "status": lambda: status.cget("text")}

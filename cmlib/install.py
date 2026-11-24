@@ -9,7 +9,7 @@ from .core import BUNDLE, FFMPEG_DIR, NO_WINDOW, SETTINGS, download_ffmpeg
 
 
 # --- self-install: the one ChannelMirror.exe is also its own installer / updater / uninstaller ---
-VERSION = "2.2"
+VERSION = "2.3"
 
 
 APP_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "Programs" / "ChannelMirror"

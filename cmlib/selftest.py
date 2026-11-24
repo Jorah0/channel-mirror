@@ -2541,6 +2541,140 @@ def remote_call(port, key, dev, cmd, args=None, t=None, nonce=None, body=None, s
     return r.status, h, data.decode(errors="replace")
 
 
+def remote_update_selftest(devs, run, ask):
+    """The Android app's updates over the link: version numbers, the web bundle (each file's SHA-256, the version
+    being the hash of that list), the APK - served only to a paired phone, in signed parts, its hash in the signed
+    check; the download page link (GET /app.apk) on allowed addresses only."""
+    import base64
+    import hashlib
+    import http.client
+    import tempfile
+    import cmlib.remote as R
+    from .peers import peer_sign
+    from .remote_app import remote_files
+    # versions: VERSION + a build number -> Android's versionCode / versionName; newer always compares higher
+    assert R.remote_apk_version("2.2", 7) == (2020007, "2.2.7") and R.remote_apk_name(2020007) == "2.2.7"
+    assert R.remote_apk_version("2.10", 1)[0] > R.remote_apk_version("2.9", 9999)[0]
+    assert R.remote_apk_version("3.0", 1)[0] > R.remote_apk_version("2.99", 9999)[0]
+    assert R.remote_apk_version("2.2", 8)[0] > R.remote_apk_version("2.2", 7)[0]
+    for bad in (("2.2", 0), ("2.2", 10000), ("x", 1), ("2.100", 1), ("2", 1), ("2.2.1", 1)):
+        try:
+            R.remote_apk_version(*bad)
+            raise AssertionError(f"version accepted: {bad}")
+        except ValueError:
+            pass
+    # the web bundle: every file of the web app, its SHA-256; the version is the hash of that list
+    files, w = remote_files(), R.remote_web(True)
+    assert set(w["files"]) == set(files) and R.remote_web()["version"] == w["version"]
+    for p, f in w["files"].items():
+        data = base64.b64decode(f["data"])
+        assert data == files[p][1] and f["sha256"] == hashlib.sha256(data).hexdigest() and f["type"] == files[p][0]
+    man = {p: f["sha256"] for p, f in w["files"].items()}
+    assert w["version"] == hashlib.sha256(json.dumps(man, sort_keys=True, separators=(",", ":")).encode()
+                                          ).hexdigest()[:16]
+    assert "data" not in next(iter(R.remote_web()["files"].values()))
+    # what the PC page says about a phone: behind when its APK is older or its screens aren't this PC's
+    pc = {"web": w["version"], "apk": 2020007}
+    assert not R.remote_app_behind({"web": w["version"], "apk": 2020007}, pc)
+    assert R.remote_app_behind({"web": w["version"], "apk": 2020006}, pc)
+    assert R.remote_app_behind({"web": "0" * 16, "apk": 2020007}, pc)
+    assert not R.remote_app_behind({"web": w["version"], "apk": 2020007}, {"web": w["version"], "apk": 0})
+    assert R.remote_app_label(None, pc) == "browser" and R.remote_app_label({"web": "x", "apk": 0}, pc) == "browser"
+    assert R.remote_app_label({"web": w["version"], "apk": 2020007}, pc) == "2.2.7"
+    assert R.remote_app_label({"web": w["version"], "apk": 2020005}, pc) == "2.2.5 - update available"
+    tmp = Path(tempfile.mkdtemp(prefix="cm_apk_"))
+    real_dirs = R.APK_DIRS
+    try:
+        # the bundle as the APK carries it: manifest.json + each file named by its hash
+        assert R.remote_export_web(tmp / "web") == w["version"]
+        got = json.loads((tmp / "web" / "manifest.json").read_text())
+        assert got["version"] == w["version"] and {p: f["sha256"] for p, f in got["files"].items()} == man
+        for p, f in got["files"].items():
+            assert hashlib.sha256((tmp / "web" / f["sha256"]).read_bytes()).hexdigest() == f["sha256"]
+        # no APK built: none offered
+        R.APK_DIRS = [tmp / "none"]
+        assert R.remote_apk() is None
+        apk = os.urandom(R.APK_PART * 2 + 1234)  # three parts
+        (tmp / R.APK_NAME).write_bytes(apk)
+        (tmp / (R.APK_NAME + ".json")).write_text(json.dumps({"code": 2020009, "name": "2.2.9"}))
+        R.APK_DIRS = [tmp / "none", tmp]
+        a = R.remote_apk()
+        assert a and a["code"] == 2020009 and a["size"] == len(apk) and a["parts"] == 3 and a["cert"] == ""
+        (tmp / (R.APK_NAME + ".json")).write_text(json.dumps({"code": 2020009, "name": "2.2.9", "cert": "ab" * 32}))
+        assert R.remote_apk()["cert"] == "ab" * 32
+        assert a["sha256"] == hashlib.sha256(apk).hexdigest()
+        (tmp / "bad").mkdir()
+        (tmp / "bad" / R.APK_NAME).write_bytes(b"x")
+        (tmp / "bad" / (R.APK_NAME + ".json")).write_text('{"code": "2020009"}')  # damaged: not offered
+        R.APK_DIRS = [tmp / "bad"]
+        assert R.remote_apk() is None
+        R.APK_DIRS = [tmp]
+        devs.clear()
+        d1, d2, key = "33" * 16, "44" * 16, "ef" * 32
+        devs[d1] = key
+        told = []
+        srv = R.RemoteServer(["127.0.0.1"], 0, lambda: dict(devs),
+                             lambda *a: (told.append(a), run(*a))[1], ask, "PC-test")
+        try:
+            port = srv.port
+            # the signed state announces this PC's versions; the check says what's there (and the PC notes the phone's)
+            st_, _, out = remote_call(port, key, d1, "state")
+            assert st_ == 200 and out["app"] == {"web": w["version"], "apk": 2020009}, out
+            st_, _, out = remote_call(port, key, d1, "app.check", {"web": "0" * 16, "apk": 2020001})
+            assert st_ == 200 and out["web"] == w["version"] and out["apk"] == {
+                "code": 2020009, "name": "2.2.9", "size": len(apk), "sha256": a["sha256"], "parts": 3}, out
+            assert told[-1] == (d1, "app.check", {"web": "0" * 16, "apk": 2020001})  # the PC page notes it
+            # the web bundle, signed: the reply's signature covers every file and its hash
+            nonce = "77" * 16
+            st_, h, out = remote_call(port, key, d1, "app.web", nonce=nonce)
+            assert st_ == 200 and out["version"] == w["version"] and out["files"] == w["files"]
+            body = json.dumps(out).encode()
+            tampered = body.replace(b'"data": "', b'"data": "A', 1)
+            assert h["X-Sig"] != peer_sign(key, "REPLY", "/api", 0, nonce, hashlib.sha256(tampered).hexdigest())
+            # the APK in parts, each signed (remote_call checks), joined = the file, its hash = the one announced
+            parts = [remote_call(port, key, d1, "app.apk", {"part": i})[2] for i in range(3)]
+            assert all(p["ok"] for p in parts) and base64.b64decode("".join(p["data"] for p in parts)) == apk
+            assert remote_call(port, key, d1, "app.apk", {"part": 3})[2]["ok"] is False  # past the end
+            for bad in ({"part": -1}, {"part": "0"}, {}, {"part": 0, "x": 1}):
+                assert remote_call(port, key, d1, "app.apk", bad)[2]["ok"] is False, bad
+            assert remote_call(port, key, d1, "app.check", {"web": "<script>", "apk": 1})[2]["ok"] is False
+            # never to a phone that isn't paired (or was removed)
+            assert remote_call(port, "00" * 32, d2, "app.apk", {"part": 0})[0] == 401
+            assert remote_call(port, "00" * 32, d2, "app.web")[0] == 401
+            assert remote_call(port, "00" * 32, d1, "app.check", {"web": "", "apk": 0})[0] == 401
+            # the first install: the APK as a download, on the remote's allowed addresses
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            c.request("GET", "/app.apk")
+            r = c.getresponse()
+            assert r.status == 200 and r.read() == apk
+            assert r.getheader("Content-Type") == "application/vnd.android.package-archive"
+            assert "attachment" in r.getheader("Content-Disposition")
+            c.close()
+            real = R.remote_ok
+            R.remote_ok = lambda ip: False
+            try:
+                c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+                c.request("GET", "/app.apk")
+                assert c.getresponse().status == 403
+                c.close()
+            finally:
+                R.remote_ok = real
+            R.APK_DIRS = [tmp / "none"]  # not built: nothing to download, nothing announced
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            c.request("GET", "/app.apk")
+            assert c.getresponse().status == 404
+            c.close()
+            assert remote_call(port, key, d1, "app.check", {"web": "", "apk": 0})[2]["apk"] is None
+            assert remote_call(port, key, d1, "app.apk", {"part": 0})[2]["ok"] is False
+            assert remote_call(port, key, d1, "state")[2]["app"] == {"web": w["version"], "apk": 0}
+        finally:
+            srv.stop()
+    finally:
+        R.APK_DIRS = real_dirs
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("phone remote app updates: versions, web bundle hashes, signed APK parts to paired phones only, download")
+
+
 def remote_selftest():
     """The phone remote: the address filter, QR codes (decoded by OpenCV when it's installed), the crypto the web app
     repeats in JavaScript, the command list, the server (pairing, signatures, replay, rate, lock-out, removal), and
@@ -2761,6 +2895,7 @@ def remote_selftest():
         answers.clear()
     finally:
         srv.stop()
+    remote_update_selftest(devs, run, ask)
     # VTube Studio's API (a fake one): allowed once, then background hotkeys listed and triggered
     fake = FakeVts()
     try:

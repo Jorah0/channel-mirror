@@ -23,10 +23,11 @@ REMOTE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  <label class="field">This phone's name<input id="devname" maxlength="40" autocomplete="off"></label>
  <button id="pairbtn" class="primary big" type="button">Pair</button>
  <p id="pairmsg" class="msg" role="status"></p>
- <p class="muted small">iPhone / iPad: to use it as an app, tap Share &rsaquo; <b>Add to Home Screen</b> first, open it
- from the Home Screen and pair there - the Home Screen app keeps its own storage. Android: menu &rsaquo; <b>Install app</b>
- / <b>Add to Home screen</b>.</p>
- <p class="muted small">Always open the remote at the same address (best: the PC's Tailscale one) - the pairing is kept
+ <button id="changepc" class="ghost" type="button" hidden>Use another PC address</button>
+ <p class="muted small webonly">iPhone / iPad: to use it as an app, tap Share &rsaquo; <b>Add to Home Screen</b> first, open it
+ from the Home Screen and pair there - the Home Screen app keeps its own storage. Android: get the app on the PC's
+ Phone remote page (<b>Get the Android app</b>), or menu &rsaquo; <b>Add to Home screen</b>.</p>
+ <p class="muted small webonly">Always open the remote at the same address (best: the PC's Tailscale one) - the pairing is kept
  for that address.</p>
 </section>
 <section id="v-deck" class="view" hidden>
@@ -64,6 +65,9 @@ REMOTE_HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
  </div><button id="recbtn" class="primary" type="button">Record</button></div>
  <h2>VTube Studio backgrounds</h2><p id="vtsnote" class="note" hidden></p><div id="vtsmodel" class="muted"></div>
  <div id="bgs" class="grid"></div>
+ <div id="appbox" hidden><h2>This app</h2><div class="card"><div id="appver" class="muted"></div>
+  <progress id="appprog" max="100" value="0" hidden></progress><p id="appmsg" class="msg" role="status"></p>
+  <button id="appbtn" class="ghost" type="button">Check for updates</button></div></div>
 </section>
 </main>
 <nav class="tabs" id="tabs" hidden>
@@ -159,6 +163,7 @@ padding:4px 4px calc(env(safe-area-inset-bottom) + 4px)}
 align-items:center;gap:2px;font-size:12px;font-weight:600;padding:6px 0;min-height:56px}
 .tabs svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8}
 .tabs button[aria-current=page]{color:var(--accent)}
+progress{width:100%;height:8px;accent-color:var(--accent);margin-top:10px}.shell .webonly{display:none}
 .toast{position:fixed;left:16px;right:16px;bottom:calc(env(safe-area-inset-bottom) + 84px);z-index:6;
 max-width:520px;margin:0 auto;background:var(--text);color:var(--bg);border-radius:12px;padding:12px 14px;
 font-size:15px;box-shadow:0 6px 20px rgba(0,0,0,.35)}
@@ -167,6 +172,7 @@ font-size:15px;box-shadow:0 6px 20px rgba(0,0,0,.35)}
 REMOTE_JS = r""""use strict";
 (function () {
 const $ = id => document.getElementById(id);
+const shell = window.CMShell || null;  // set inside the Android app (CM Remote) only
 // ---- SHA-256 and HMAC in plain JavaScript (WebCrypto's crypto.subtle only exists on https pages) ----
 const KS = new Uint32Array([0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
 0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,
@@ -267,7 +273,7 @@ async function post(path, body, nonce) {
   const headers = {"Content-Type": "application/json"};
   if (nonce) headers["X-Nonce"] = nonce;
   try {
-    const r = await fetch(path, {method: "POST", headers, body: data, cache: "no-store", signal: ctl.signal});
+    const r = await fetch(path, {method: "POST", headers, body: data, cache: "no-store", redirect: "error", signal: ctl.signal});
     const out = new Uint8Array(await r.arrayBuffer());
     if (!r.ok) throw new Error(dec(out) || r.statusText);
     return {data: out, sig: r.headers.get("X-Sig") || ""};
@@ -281,7 +287,7 @@ async function api(cmd, args, again) {
   const t = now() + offset, nonce = hex(rand(16)), ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 15000);
   let r, data;
   try {
-    r = await fetch("/api", {method: "POST", cache: "no-store", signal: ctl.signal, body, headers: {
+    r = await fetch("/api", {method: "POST", cache: "no-store", redirect: "error", signal: ctl.signal, body, headers: {
       "Content-Type": "application/json", "X-Dev": dev.id, "X-Time": String(t), "X-Nonce": nonce, "X-Body": bh,
       "X-Sig": sign(dev.key, "POST", "/api", t, nonce, bh)}});
     data = new Uint8Array(await r.arrayBuffer());
@@ -451,7 +457,62 @@ function render(s) {
   $("decknote").hidden = !s.deck_note; $("decknote").textContent = s.deck_note || "";
   renderObs(s.obs || {}); if (s.music) renderMusic(s.music); renderCapture(s);
   if (s.deck_rev !== deckRev) loadDeck();
+  if (shell && s.app) { const k = s.app.web + "/" + s.app.apk; if (k !== tried) { tried = k; update(true); } }
 }
+// ---- the Android app (CM Remote): its screens and the app itself, updated from the paired PC only ----
+// Every answer here is signed by the PC (api() checks it); the files are checked against the hashes the PC listed, here
+// and again by the app, which also installs only an APK signed with its own key.
+let updating = false, tried = "";
+function appMsg(text, kind, pct) {
+  $("appmsg").className = "msg " + (kind || ""); $("appmsg").textContent = text;
+  const p = $("appprog"); p.hidden = pct == null; if (pct != null) p.value = pct;
+}
+function unb64(s) { const t = atob(s), b = new Uint8Array(t.length); for (let i = 0; i < t.length; i++) b[i] = t.charCodeAt(i); return b; }
+function shellInfo() { try { return JSON.parse(shell.info()); } catch (e) { return null; } }
+async function update(auto) {
+  const mine = shell && dev && !updating ? shellInfo() : null;
+  if (!mine) return;
+  $("appver").textContent = "Version " + mine.name + "  -  screens " + mine.web;
+  updating = true; $("appbtn").disabled = true;
+  try {
+    appMsg("Checking for updates...", "", null);
+    const r = await api("app.check", {web: mine.web, apk: mine.apk});
+    if (r.apk && r.apk.code > mine.apk) {
+      if (auto) toast("Updating the app to " + r.apk.name + "...");
+      const parts = [];
+      for (let i = 0; i < r.apk.parts; i++) {
+        appMsg("Downloading version " + r.apk.name + "...", "", Math.round(90 * i / r.apk.parts));
+        parts.push((await api("app.apk", {part: i})).data);
+      }
+      const b64 = parts.join(""), apk = unb64(b64);
+      if (apk.length !== r.apk.size || hex(sha256(apk)) !== r.apk.sha256) throw new Error("The download isn't the app the PC announced - not installed.");
+      appMsg("Installing version " + r.apk.name + "...", "", 95);
+      shell.installApk(b64, r.apk.sha256);  // it says how it goes through CMRemote.shell(); it restarts when done
+      return;
+    }
+    if (r.web && r.web !== mine.web) {
+      appMsg("Updating the screens...", "", 50);
+      const w = await api("app.web"), files = w.files || {}, man = {};
+      for (const p of Object.keys(files).sort()) {
+        if (hex(sha256(unb64(files[p].data))) !== files[p].sha256) throw new Error("A file of the update isn't the one the PC listed - not applied.");
+        man[p] = files[p].sha256;
+      }
+      if (w.version !== r.web || hex(sha256(enc(JSON.stringify(man)))).slice(0, 16) !== w.version) throw new Error("The update isn't the one the PC announced - not applied.");
+      const err = shell.saveWeb(JSON.stringify({version: w.version, files}));
+      if (err) throw new Error(err);
+      appMsg("Updated - restarting...", "good", 100);
+      location.reload();
+      return;
+    }
+    appMsg("Up to date.", "good", null);
+  } catch (e) {
+    if (!(e instanceof Unpaired)) { appMsg(e.message, "bad", null); if (!auto) toast(e.message); }
+  } finally { updating = false; $("appbtn").disabled = false; }
+}
+window.CMRemote.shell = (kind, text) => {  // the app, about the install
+  appMsg(text, kind === "error" ? "bad" : kind === "done" ? "good" : "", kind === "progress" ? 95 : null);
+  if (kind === "error") toast(text);
+};
 async function poll(soon) {
   clearTimeout(polling);
   if (!dev) return;
@@ -473,7 +534,7 @@ function unpaired() {
   $("pairmsg").textContent = "This phone isn't paired with this PC any more (it was removed there, or paired again). Pair it again.";
 }
 function started() {
-  $("tabs").hidden = false; $("pcname").textContent = dev.pc || "Channel Mirror";
+  $("tabs").hidden = false; $("pcname").textContent = dev.pc || "Channel Mirror"; $("appbox").hidden = !shell;
   show(store.pref("view") || "deck"); renderTo(); poll();
 }
 async function pair() {
@@ -526,6 +587,9 @@ $("recbtn").addEventListener("click", () => {
   if (on || confirm("Start recording the screen on the PC?")) act(on ? "rec.stop" : "rec.start");
 });
 document.addEventListener("visibilitychange", () => { if (!document.hidden && dev) poll(); });
+$("appbtn").addEventListener("click", () => update(false));
+$("changepc").addEventListener("click", () => shell.forget());
+if (shell) { document.body.classList.add("shell"); $("changepc").hidden = false; }
 if ("serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").catch(() => {});
 $("devname").value = defaultName();
 const m = /[#&]pair=(\d{8})/.exec(location.hash);
