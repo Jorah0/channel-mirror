@@ -98,7 +98,7 @@ class App:
         simpledialog.askinteger = lambda title, prompt, **k: self.texts.pop(0) if self.texts else None
         t = self.tmp
         cm.SETTINGS = t / "settings.json"
-        cm.SETTINGS.write_text(json.dumps({"sd_autosend": False, "theme": "light", **(settings or {})}))
+        cm.SETTINGS.write_text(json.dumps({"sd_autosend": False, "theme": "light", "close_to_taskbar": False, **(settings or {})}))
         for name, sub in (("SD_DIR", "StreamDeck"), ("SD_BACKUPS", "Stream Deck backups"),
                           ("SD_OUT", "Stream Deck profiles"), ("VTS_ASSETS", "VTube Studio"),
                           ("VTS_BACKUPS", "VTube Studio backups"), ("LINK_INBOX", "Incoming")):

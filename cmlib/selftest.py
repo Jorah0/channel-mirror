@@ -152,7 +152,7 @@ from .peers import (
     peer_summary,
     peer_unlink,
 )
-from .recorder import rec_area, rec_command, rec_from_app, rec_name, rec_to_app
+from .recorder import rec_area, rec_command, rec_name
 from .setup import SETUP_GLOBALS, app_command, setup_apply, setup_auto, setup_check, ui_mode, win_light_theme
 from .music import (
     MUSIC_BLOCK,
@@ -1506,13 +1506,9 @@ def selftest():
         assert link_to_peer(["--to-linked", "C:\\a.wav", "D:\\b"]) == "--to-linked\nC:\\a.wav\nD:\\b"
         assert link_to_peer(["C:\\a.wav"]) is None
         # screen recorder: the area on a monitor -> desktop pixels (even sizes for H.264), and the ffmpeg command
-        # a 2560 x 1440 monitor at 100% left of a 150% main one: the app (system DPI aware) sees it 1.5x larger
-        mon = ("Monitor 1", -2560, 263, 2560, 1440, (-3840, 395, 3840, 2160))
+        mon = ("Monitor 1", -2560, 263, 2560, 1440)  # left of the main one, in real pixels
         assert rec_area(mon, 100, 50, 641, 361) == (-2460, 313, 640, 360)
         assert rec_area(mon, 0, 0, 0, 0) == (-2560, 263, 2560, 1440)  # 0 x 0 = the whole monitor
-        assert rec_to_app(mon, -2460, 313) == (-3690, 470) and rec_from_app(mon, -3690, 470) == (-2460, 313)
-        main = ("Monitor 2", 0, 0, 3840, 2160, (0, 0, 3840, 2160))
-        assert rec_to_app(main, 350, 350) == (350, 350) and rec_from_app(main, 3839, 0) == (3839, 0)
         for bad in ((2500, 0, 100, 100), (-1, 0, 100, 100), (0, 0, 8, 8), ("a", 0, 10, 10)):
             try:
                 rec_area(mon, *bad)

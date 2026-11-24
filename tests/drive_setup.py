@@ -49,6 +49,7 @@ ff.mkdir()
 cm.SETTINGS = tmp / "settings.json"
 cm.SETTINGS.write_text(json.dumps({"theme": "light", "sd_autosend": False, "tab": 9}))  # 9 = Setup, as 2.1 saved it (by number)
 REAL_SD = cm.SD_DIR
+cm.RUN_KEY = r"Software\ChannelMirrorTest\Run"  # start-with-Windows goes here, never the real Run key
 
 
 def walk(w):
@@ -78,6 +79,11 @@ def cell(page, key, kind, text=None):
 
 def radio(page, text):
     next(b for b in walk(page) if isinstance(b, ttk.Radiobutton) and b.cget("text") == text).invoke()
+    page.update()
+
+
+def check(page, text):
+    next(b for b in walk(page) if isinstance(b, ttk.Checkbutton) and b.cget("text").startswith(text)).invoke()
     page.update()
 
 
@@ -156,6 +162,17 @@ def tour1():
         rbox = [w for w in walk(r) if isinstance(w, ttk.Entry) and str(w.cget("textvariable"))
                 and w.getvar(w.cget("textvariable")) == str(rec)]
         assert len(rbox) >= 2, rbox  # the Setup row and the recorder tab's box
+        # window: the close button minimizes by default (still running); start with Windows on, then off again
+        r.tk.call(r.protocol("WM_DELETE_WINDOW"))
+        r.update()
+        assert r.winfo_exists() and r.state() == "iconic", r.state()
+        r.deiconify()
+        r.update()
+        assert cm.startup_get() is None
+        check(page, "Start Channel Mirror when Windows starts")
+        assert "--minimized" in cm.startup_get() and "channel_mirror.py" in cm.startup_get(), cm.startup_get()
+        check(page, "Start Channel Mirror when Windows starts")
+        assert cm.startup_get() is None
         # Restart: closes like the close button (settings saved), then starts the app again
         next(b for b in walk(page) if isinstance(b, ttk.Button) and b.cget("text") == "Restart now").invoke()
     except BaseException as e:
@@ -173,6 +190,7 @@ def tour2():
         assert any(str(v).startswith("SetupTest") for v in profiles), profiles  # read from the picked folder
         cell(page, "sd_dir", ttk.Button, "Auto").invoke()
         assert cm.SD_DIR == cm.SETUP_AUTO["sd_dir"]
+        check(page, "Close button minimizes")  # off: the close button quits
         r.tk.call(r.protocol("WM_DELETE_WINDOW"))  # the window's close button
     except BaseException as e:
         errors.append(e)
@@ -194,8 +212,12 @@ tour[0] = tour2
 cm.gui()
 assert not errors, errors
 saved = json.loads(cm.SETTINGS.read_text())
+assert saved["close_to_taskbar"] is False, saved
 assert "sd_dir" not in saved["paths"] and len(launched) == 1, (saved, launched)  # a plain close: no restart
 subprocess.Popen = real_popen
 assert not popups, popups  # no message box was needed
 shutil.rmtree(tmp, ignore_errors=True)
-print("setup tab ok: light/dark/follow live, folders picked + Auto + applied at next start, restart command")
+import winreg
+winreg.DeleteKey(winreg.HKEY_CURRENT_USER, cm.RUN_KEY)  # the test key (left empty above)
+winreg.DeleteKey(winreg.HKEY_CURRENT_USER, r"Software\ChannelMirrorTest")
+print("setup tab ok: light/dark/follow live, folders picked + Auto + applied at next start, restart command, close to taskbar + toggle, start with Windows")

@@ -796,6 +796,9 @@ def gui():
     nb.select(names.index(last) if last in names else 0)
 
     def on_close():
+        # the close button minimizes (Setup tab can turn that off); closing it again from the taskbar quits
+        if cfg.get("close_to_taskbar", True) and not restarting and root.state() != "iconic":
+            return root.iconify()
         if editor and editor["saving"]():  # a send is still running: close when it's done
             root.title(f"Channel Mirror {VERSION} - finishing sending to Stream Deck...")
             return root.after(300, on_close)
@@ -838,6 +841,8 @@ def gui():
         if restarting:
             subprocess.Popen(app_command(), close_fds=True)
     root.protocol("WM_DELETE_WINDOW", on_close)
+    if "--minimized" in sys.argv:  # started with Windows: wait on the taskbar
+        root.iconify()
     # files/folders dropped on the exe or sent via right-click "Send to" arrive as arguments
     clicked = link_args(sys.argv[1:])  # opened by a link: that link only, nothing else from its command line
     if clicked:

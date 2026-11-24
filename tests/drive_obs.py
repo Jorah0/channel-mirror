@@ -51,7 +51,7 @@ pg.parent.mkdir(parents=True)
     "Pages": {"Current": "page1", "Default": "x", "Pages": ["page1"]}}))
 pg.write_text(json.dumps({"Controllers": [{"Type": "Keypad", "Actions": {}}]}))
 (work / "A_VTS" / "StreamingAssets" / "Backgrounds").mkdir(parents=True)
-(work / "a_settings.json").write_text(json.dumps({"theme": "dark", "sd_autosend": False}))
+(work / "a_settings.json").write_text(json.dumps({"theme": "dark", "sd_autosend": False, "close_to_taskbar": False}))
 (work / "a_obs.json").write_text(json.dumps({"password": "pw-a"}))
 peer_proc = subprocess.Popen([sys.executable, "-u", str(HERE / "crosspc_peer.py"), REPO, str(work)])
 

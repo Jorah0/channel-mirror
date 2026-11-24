@@ -16,6 +16,31 @@ APP_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "Programs" / "Ch
 
 
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\ChannelMirror"
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"  # programs Windows starts at sign-in (per user)
+
+
+def startup_get():
+    """The command Windows runs at sign-in for Channel Mirror, or None."""
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
+            return winreg.QueryValueEx(k, "ChannelMirror")[0]
+    except OSError:
+        return None
+
+
+def startup_set(cmd):
+    """Start Channel Mirror when Windows starts: cmd = the command (a list), or None = don't."""
+    import winreg
+    if cmd:
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
+            winreg.SetValueEx(k, "ChannelMirror", 0, winreg.REG_SZ, subprocess.list2cmdline(cmd))
+    else:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+                winreg.DeleteValue(k, "ChannelMirror")
+        except OSError:
+            pass
 
 
 def shortcut_paths():
@@ -94,6 +119,8 @@ def uninstall(app_dir=APP_DIR, links=None, reg_key=UNINSTALL_KEY, data=False):
         pass
     if reg_key == UNINSTALL_KEY and str(app_dir) in (link_registered() or ""):
         link_unregister()  # links pointed at this install
+    if reg_key == UNINSTALL_KEY and str(app_dir) in (startup_get() or ""):
+        startup_set(None)  # don't start a removed program at sign-in
     gone = [app_dir] + ([FFMPEG_DIR.parent] if data else [])
     if data:
         SETTINGS.unlink(missing_ok=True)

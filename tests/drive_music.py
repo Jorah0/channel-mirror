@@ -69,7 +69,7 @@ def make_vts(root, model):
 a_song = song(work / "a music" / "a_song_from_pc_a.wav", 330, 2.0)
 make_sd(work / "A_SD", "A-Main")
 make_vts(work / "A_VTS", "Wolf")
-(work / "a_settings.json").write_text(json.dumps({"theme": "dark", "sd_autosend": False, "music": {
+(work / "a_settings.json").write_text(json.dumps({"theme": "dark", "sd_autosend": False, "close_to_taskbar": False, "music": {
     "playlists": [{"name": "A Mix", "songs": [{"path": str(a_song), "title": ""}]}]}}))
 peer_proc = subprocess.Popen([sys.executable, "-u", str(HERE / "crosspc_peer.py"), REPO, str(work)])
 
@@ -83,7 +83,7 @@ cm.VTS_ASSETS, cm.vts_assets = make_vts(tmp / "B_VTS", "Fox"), lambda: []
 cm.sd_push = lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not send to Stream Deck"))
 cm.sd_start, cm.sd_running, cm.sd_connected = (lambda: None), (lambda: False), (lambda: set())
 cm.SETTINGS = tmp / "b_settings.json"
-cm.SETTINGS.write_text(json.dumps({"theme": "light", "sd_autosend": False}))
+cm.SETTINGS.write_text(json.dumps({"theme": "light", "sd_autosend": False, "close_to_taskbar": False}))
 cm.LINK_INBOX = tmp / "B_Incoming"
 cm.MUSIC_NOW = tmp / "Now playing.txt"
 cm.LinkServer = functools.partial(cm.LinkServer, host="127.0.0.1")

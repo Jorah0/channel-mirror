@@ -7,11 +7,10 @@ from .recorder import (
     REC_PEER,
     rec_area,
     rec_command,
-    rec_from_app,
     rec_monitors,
     rec_name,
     rec_overlay,
-    rec_to_app,
+    rec_pm,
 )
 from .ui import UI, ui_background, ui_empty
 
@@ -147,11 +146,6 @@ def recorder_tab(page, cfg):
             return st["rec_area"]
         return rec_area(mon(), v["x"].get(), v["y"].get(), v["w"].get(), v["h"].get())
 
-    def app_rect(x, y, w, h):
-        """Real desktop pixels -> this app's window geometry string."""
-        (ax, ay), (bx, by) = rec_to_app(mon(), x, y), rec_to_app(mon(), x + w, y + h)
-        return ax, ay, bx - ax, by - ay
-
     def place():
         """Show / move / hide the outline and the floating button to match the area and state."""
         try:
@@ -164,35 +158,35 @@ def recorder_tab(page, cfg):
             ok = False
         recording = st["proc"] is not None
         show = ok and (st["shown"] or recording)
-        _, mx, my, mw, mh, _ = mon()
+        _, mx, my, mw, mh = mon()
+        # the outline, the button and the drag layer live in real desktop pixels (see rec_pm): made and moved in there
         if show and v["outline"].get():
             ol = st["outline"]
             if ol is None or not ol.winfo_exists():
-                ol = st["outline"] = tk.Toplevel(page)
+                ol = st["outline"] = rec_pm(tk.Toplevel, page)
                 ol.overrideredirect(True)
                 ol.attributes("-topmost", True)
                 ol.configure(bg="#010203")
                 ol.attributes("-transparentcolor", "#010203")
                 ol.canvas = tk.Canvas(ol, bg="#010203", highlightthickness=0)
                 ol.canvas.pack(fill="both", expand=True)
-                if not rec_overlay(ol):
+                if not rec_pm(rec_overlay, ol):  # (its window is made here: real pixels)
                     status.config(text="Note: this Windows can't leave the outline out of recordings - it sits "
                                        "just outside the area, but the floating button may show if it's inside.")
             pad = 4  # the line sits just outside the recorded pixels (and is left out of the video anyway)
             ox, oy = max(mx, x - pad), max(my, y - pad)
             ow, oh = min(mx + mw, x + w + pad) - ox, min(my + mh, y + h + pad) - oy
-            ax, ay, aw, ah = app_rect(ox, oy, ow, oh)
-            ol.geometry(f"{aw}x{ah}+{ax}+{ay}")
+            rec_pm(ol.geometry, f"{ow}x{oh}+{ox}+{oy}")
             ol.canvas.delete("all")
             colour = "#ef4444" if recording else "#f59e0b"
-            ol.canvas.create_rectangle(2, 2, aw - 2, ah - 2, outline=colour, width=3)
-            ol.deiconify()
+            ol.canvas.create_rectangle(2, 2, ow - 2, oh - 2, outline=colour, width=3)
+            rec_pm(ol.deiconify)
         elif st["outline"] is not None and st["outline"].winfo_exists():
             st["outline"].withdraw()
         if show and v["float"].get():
             fl = st["float"]
             if fl is None or not fl.winfo_exists():
-                fl = st["float"] = tk.Toplevel(page)
+                fl = st["float"] = rec_pm(tk.Toplevel, page)
                 fl.overrideredirect(True)
                 fl.attributes("-topmost", True)
                 fl.configure(bg=UI["panel"], highlightbackground=UI["border"], highlightthickness=1)
@@ -200,21 +194,20 @@ def recorder_tab(page, cfg):
                 fl.btn.pack(side="left", padx=4, pady=4)
                 fl.lbl = tk.Label(fl, bg=UI["panel"], font=("Segoe UI", 10), width=7, cursor="fleur")
                 fl.lbl.pack(side="left", padx=(0, 6))
-                fl.lbl.bind("<ButtonPress-1>", lambda e: st.update(drag=(e.x_root - fl.winfo_x(), e.y_root - fl.winfo_y())))
-                fl.lbl.bind("<B1-Motion>", lambda e: (fl.geometry(f"+{e.x_root - st['drag'][0]}+"
-                                                                  f"{e.y_root - st['drag'][1]}"), st.update(moved=True)))
-                rec_overlay(fl, clickthrough=False)
+                fl.lbl.bind("<ButtonPress-1>", lambda e: st.update(drag=(e.x, e.y)))  # where on it it's held
+                fl.lbl.bind("<B1-Motion>", lambda e: (rec_pm(fl.geometry, f"+{rec_pm(fl.winfo_pointerx) - st['drag'][0]}+"
+                                                                          f"{rec_pm(fl.winfo_pointery) - st['drag'][1]}"),
+                                                      st.update(moved=True)))
+                rec_pm(rec_overlay, fl, False)
                 st["moved"] = False
             fl.btn.config(text="■ Stop" if recording else "● Record", bg="#ef4444" if recording else UI["accent"],
                           fg=UI["on_accent"], activebackground="#b91c1c" if recording else UI["accent2"])
             if not st.get("moved"):  # above the area's top-right corner, or inside it when there's no room
                 fl.update_idletasks()
                 fw, fh = fl.winfo_reqwidth(), fl.winfo_reqheight()
-                ax, ay, aw, ah = app_rect(x, y, w, h)
-                (mnx, mny) = rec_to_app(mon(), mx, my)
-                top = ay - fh - 8 if ay - fh - 8 >= mny else ay + 8
-                fl.geometry(f"+{max(mnx, ax + aw - fw)}+{top}")
-            fl.deiconify()
+                top = y - fh - 8 if y - fh - 8 >= my else y + 8
+                rec_pm(fl.geometry, f"+{max(mx, x + w - fw)}+{top}")
+            rec_pm(fl.deiconify)
         elif st["float"] is not None and st["float"].winfo_exists():
             st["float"].withdraw()
 
@@ -223,15 +216,16 @@ def recorder_tab(page, cfg):
         if st["proc"]:
             return
         m = mon()
-        ax, ay, aw, ah = m[5]
-        win = tk.Toplevel(page)
+        _, mx, my, mw, mh = m
+        win = rec_pm(tk.Toplevel, page)  # real pixels: a point on it is a point on the monitor
         win.overrideredirect(True)
         win.attributes("-topmost", True)
         win.attributes("-alpha", 0.35)
-        win.geometry(f"{aw}x{ah}+{ax}+{ay}")
+        rec_pm(win.geometry, f"{mw}x{mh}+{mx}+{my}")
         cv = tk.Canvas(win, bg="#000000", highlightthickness=0, cursor="crosshair")
         cv.pack(fill="both", expand=True)
-        cv.create_text(aw // 2, 40, text="Drag the area to record  -  Esc cancels", fill="#ffffff",
+        rec_pm(win.update_idletasks)
+        cv.create_text(mw // 2, 40, text="Drag the area to record  -  Esc cancels", fill="#ffffff",
                        font=("Segoe UI", 16, "bold"))
         box = {}
 
@@ -248,15 +242,15 @@ def recorder_tab(page, cfg):
                 return
             (x0, y0), (x1, y1) = box["a"], (e.x, e.y)
             win.destroy()
-            p0 = rec_from_app(m, ax + min(x0, x1), ay + min(y0, y1))
-            p1 = rec_from_app(m, ax + max(x0, x1), ay + max(y0, y1))
-            if p1[0] - p0[0] < 16 or p1[1] - p0[1] < 16:
+            x0, x1 = sorted((max(0, min(mw, x0)), max(0, min(mw, x1))))
+            y0, y1 = sorted((max(0, min(mh, y0)), max(0, min(mh, y1))))
+            if x1 - x0 < 16 or y1 - y0 < 16:
                 return status.config(text="That area is too small - drag a bigger one.")
             st["moved"] = False
-            v["x"].set(str(p0[0] - m[1]))
-            v["y"].set(str(p0[1] - m[2]))
-            v["w"].set(str(p1[0] - p0[0]))
-            v["h"].set(str(p1[1] - p0[1]))
+            v["x"].set(str(x0))
+            v["y"].set(str(y0))
+            v["w"].set(str(x1 - x0))
+            v["h"].set(str(y1 - y0))
             status.config(text="Area set. Press Record when you're ready.")
         cv.bind("<ButtonPress-1>", press)
         cv.bind("<B1-Motion>", motion)

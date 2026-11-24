@@ -18,7 +18,7 @@ tk.Tk.report_callback_exception = lambda self, *a: errors.append(a)
 cm.sd_push = lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not send"))
 tmp = Path(tempfile.mkdtemp())
 cfg = json.loads((Path.home() / ".channel_mirror.json").read_text()) if (Path.home() / ".channel_mirror.json").is_file() else {}
-cfg.update(sd_autosend=False, out_dir=str(tmp / "out"), tab=0)
+cfg.update(sd_autosend=False, out_dir=str(tmp / "out"), tab=0, close_to_taskbar=False)
 cfg.pop("obs", None)  # never the user's real OBS (it would connect by itself if it was connected)
 cfg.pop("link", None)  # nor their linked computers (receiving would write the real Incoming / nonce files)
 cm.LINK_INBOX = tmp / "Incoming"

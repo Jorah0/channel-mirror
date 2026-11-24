@@ -1,6 +1,7 @@
 """The setup tab."""
 from pathlib import Path
-from .setup import SETUP_ITEMS, SETUP_RESTART, setup_apply, setup_auto, setup_check, setup_reset, ui_mode
+from . import install
+from .setup import app_command, SETUP_ITEMS, SETUP_RESTART, setup_apply, setup_auto, setup_check, setup_reset, ui_mode
 from .ui import UI, ui_switch
 
 
@@ -33,6 +34,17 @@ def setup_tab(page, cfg, live, restart):
             ui_switch(top, "system")
         page.after(3000, follow)
     page.after(3000, follow)
+
+    wf = ttk.LabelFrame(body, text="Window")
+    wf.pack(fill="x", pady=(8, 0))
+    to_bar = tk.BooleanVar(value=cfg.get("close_to_taskbar", True))
+    ttk.Checkbutton(wf, text="Close button minimizes to the taskbar (close it from the taskbar to quit)",
+                    variable=to_bar, command=lambda: cfg.__setitem__("close_to_taskbar", to_bar.get())
+                    ).pack(anchor="w")
+    boot = tk.BooleanVar(value=bool(install.startup_get()))
+    ttk.Checkbutton(wf, text="Start Channel Mirror when Windows starts (minimized)", variable=boot,
+                    command=lambda: install.startup_set(app_command() + ["--minimized"] if boot.get() else None)
+                    ).pack(anchor="w")
 
     ff = ttk.LabelFrame(body, text="Folders")
     ff.pack(fill="x", pady=(8, 0))

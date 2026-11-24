@@ -3,6 +3,8 @@ tab: drag areas (centre, corners, edges, tiny, reversed), typed values, Whole mo
 around the recorded area (real pixels, both scalings), the box drawn while dragging must follow the pointer, and the
 floating button must stay on the monitor. (drive_recorder.py checks the recording itself to the pixel.)
 Read-only: nothing recorded, settings in a temp file (harness)."""
+import ctypes
+import ctypes.wintypes
 from tkinter import ttk
 
 from harness import App, walk
@@ -33,21 +35,27 @@ def pick_monitor(label):
     assert v["mon"].get() == label, v["mon"].get()
 
 
-def outline_real(mon):
-    ol = st["outline"]
+def real_rect(win):
+    """Where Windows really shows a window, in desktop pixels (left, top, right, bottom): asked of Windows itself,
+    not worked out through the app's own sums."""
     app.pump(0.05)
-    x, y, w, h = ol.winfo_rootx(), ol.winfo_rooty(), ol.winfo_width(), ol.winfo_height()
-    return (*cm.rec_from_app(mon, x, y), *cm.rec_from_app(mon, x + w, y + h))
+    r = ctypes.wintypes.RECT()
+    cm.rec_pm(ctypes.windll.user32.GetWindowRect, int(win.wm_frame(), 16), ctypes.byref(r))
+    return r.left, r.top, r.right, r.bottom
+
+
+def outline_real(mon):
+    return real_rect(st["outline"])
 
 
 def check(label, mon, area):
     ax, ay, aw, ah = area
-    _, mx, my, mw, mh, _ = mon
+    _, mx, my, mw, mh = mon
     want = (max(mx, ax - PAD), max(my, ay - PAD), min(mx + mw, ax + aw + PAD), min(my + mh, ay + ah + PAD))
     got = outline_real(mon)
     off = max(abs(a - b) for a, b in zip(got, want))
     fl = st["float"]
-    fx, fy = cm.rec_from_app(mon, fl.winfo_rootx(), fl.winfo_rooty())
+    fx, fy = real_rect(fl)[:2]
     float_ok = mx - 5 <= fx <= mx + mw and my - 5 <= fy <= my + mh
     ok = off <= TOL and float_ok and bool(st["outline"].winfo_viewable())
     print(f"{'OK ' if ok else 'BAD'} {label:42} area {area}  outline {got}  off {off}px  button on monitor {float_ok}")
@@ -62,8 +70,8 @@ def drag(mon, x0, y0, x1, y1):
     app.pump(0.1)
     layer = next(t for t in app.windows() if float(t.attributes("-alpha")) < 1)
     cv = layer.winfo_children()[0]
-    lx, ly = mon[5][:2]
-    pts = [cm.rec_to_app(mon, mon[1] + x, mon[2] + y) for x, y in ((x0, y0), ((x0 + x1) // 2, (y0 + y1) // 2),
+    lx, ly = mon[1], mon[2]  # the layer covers the monitor, in real pixels
+    pts = [(mon[1] + x, mon[2] + y) for x, y in ((x0, y0), ((x0 + x1) // 2, (y0 + y1) // 2),
                                                                   (x1, y1))]
     cv.event_generate("<ButtonPress-1>", x=pts[0][0] - lx, y=pts[0][1] - ly)
     cv.event_generate("<B1-Motion>", x=pts[1][0] - lx, y=pts[1][1] - ly)

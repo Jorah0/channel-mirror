@@ -6,6 +6,7 @@ must be exactly the area's size and show exactly the pattern (its 1-pixel border
 magenta around it, corners the right way round). Then: odd sizes, typing while recording, a recording killed mid-way
 (still plays), two recordings in the same second, settings kept on close. Recordings go to a temp folder."""
 import ctypes
+import ctypes.wintypes
 import json
 import shutil
 import subprocess
@@ -71,11 +72,17 @@ def frames(f, w, h, times):
     return out
 
 
-def outline_real(mon):
-    ol = st["outline"]
+def real_rect(win):
+    """Where Windows really shows a window, in desktop pixels (left, top, right, bottom): asked of Windows itself,
+    not worked out through the app's own sums."""
     app.pump(0.05)
-    x, y, w, h = ol.winfo_rootx(), ol.winfo_rooty(), ol.winfo_width(), ol.winfo_height()
-    return (*cm.rec_from_app(mon, x, y), *cm.rec_from_app(mon, x + w, y + h))
+    r = ctypes.wintypes.RECT()
+    cm.rec_pm(ctypes.windll.user32.GetWindowRect, int(win.wm_frame(), 16), ctypes.byref(r))
+    return r.left, r.top, r.right, r.bottom
+
+
+def outline_real(mon):
+    return real_rect(st["outline"])
 
 
 def wait_stopped(secs=30):
@@ -134,17 +141,17 @@ for n, mon in enumerate(cm.rec_monitors()):
     app.pump(0.2)
     layer = next(t for t in app.windows() if float(t.attributes("-alpha")) < 1)
     cv = layer.winfo_children()[0]
-    lx, ly = mon[5][:2]
-    (sx, sy), (ex, ey) = cm.rec_to_app(mon, gx, gy), cm.rec_to_app(mon, gx + w, gy + h)
+    assert real_rect(layer) == (mon[1], mon[2], mon[1] + mon[3], mon[2] + mon[4]), real_rect(layer)
+    lx, ly = mon[1], mon[2]  # the layer covers the monitor, in real pixels
+    (sx, sy), (ex, ey) = (gx, gy), (gx + w, gy + h)
     cv.event_generate("<ButtonPress-1>", x=sx - lx, y=sy - ly)
     cv.event_generate("<B1-Motion>", x=(sx + ex) // 2 - lx, y=(sy + ey) // 2 - ly)
     cv.event_generate("<B1-Motion>", x=ex - lx, y=ey - ly)
     cv.event_generate("<ButtonRelease-1>", x=ex - lx, y=ey - ly)
     app.pump(0.2)
     got = tuple(int(v[k].get()) for k in "xywh")
-    scaled = mon[5][2] != mon[3]  # the app sees this monitor scaled: a drag lands to within one app pixel
     print(f"{short}: dragged {got}, wanted {(ax, ay, w, h)}")
-    assert all(abs(a - b) <= (2 if scaled else 0) for a, b in zip(got, (ax, ay, w, h))), got
+    assert got == (ax, ay, w, h), got
 
     # 2. typed exactly; the tab says what it records; the outline sits exactly PAD pixels around it
     for k, val in zip("xywh", (ax, ay, w, h)):

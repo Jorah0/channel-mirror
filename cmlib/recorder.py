@@ -5,10 +5,28 @@ from .core import NO_WINDOW
 
 
 # --- screen recorder: an area of a monitor -> a video file, through ffmpeg's Windows screen grabber ---
+def rec_pm(f, *args):
+    """f(*args) with this thread "per-monitor DPI aware": every position in real desktop pixels, the ones ffmpeg
+    records. Windows made in here stay that way. The app itself is only "system DPI aware", and Windows' sums for such
+    windows on a monitor at another scaling are unreliable (the same window lands right, or 1.5x off), so the recorder's
+    on-screen windows (outline, button, drag layer) are made and moved in here. Older Windows: just f(*args)."""
+    import ctypes
+    u = ctypes.windll.user32
+    try:
+        u.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+        old = u.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))  # PER_MONITOR_AWARE_V2
+    except AttributeError:  # before Windows 10 1607
+        old = None
+    try:
+        return f(*args)
+    finally:
+        if old:
+            u.SetThreadDpiAwarenessContext(ctypes.c_void_p(old))
+
+
 def rec_monitors():
-    """[(label, left, top, width, height, app rect)] of the monitors: real pixels on the desktop (what ffmpeg
-    records; the main one at 0,0, others can be negative), left one first. app rect = the same monitor as this
-    app's windows see it: the app is "system DPI aware", so a monitor at a different scaling looks bigger/smaller."""
+    """[(label, left, top, width, height)] of the monitors in real pixels on the desktop (what ffmpeg records; the
+    main one at 0,0, others can be negative), left one first."""
     import ctypes
     from ctypes import wintypes
     u = ctypes.windll.user32
@@ -18,46 +36,21 @@ def rec_monitors():
                     ("dwFlags", wintypes.DWORD), ("szDevice", wintypes.WCHAR * 32)]
 
     def monitors():
-        found = {}
+        found = []
 
         def each(h, _dc, _r, _d):
             mi = Info()
             mi.cbSize = ctypes.sizeof(mi)
             u.GetMonitorInfoW(h, ctypes.byref(mi))
             r = mi.rcMonitor
-            found[mi.szDevice] = (r.left, r.top, r.right - r.left, r.bottom - r.top, bool(mi.dwFlags & 1))
+            found.append(((r.left, r.top, r.right - r.left, r.bottom - r.top), bool(mi.dwFlags & 1)))
             return 1
         proc = ctypes.WINFUNCTYPE(ctypes.c_int, wintypes.HMONITOR, wintypes.HDC, ctypes.POINTER(wintypes.RECT),
                                   wintypes.LPARAM)(each)
         u.EnumDisplayMonitors(None, None, proc, 0)
-        return found
-    app = monitors()
-    real = app
-    try:  # real pixels: this thread per-monitor aware for a moment
-        u.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
-        old = u.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
-        if old:
-            try:
-                real = monitors()
-            finally:
-                u.SetThreadDpiAwarenessContext(ctypes.c_void_p(old))
-    except AttributeError:  # older Windows: one scaling for all
-        pass
-    rows = sorted((r[:4], r[4], app.get(dev, r)[:4]) for dev, r in real.items())
-    return [(f"Monitor {i}{' (main)' if main else ''}: {w} x {h} at {x},{y}", x, y, w, h, a)
-            for i, ((x, y, w, h), main, a) in enumerate(rows, 1)]
-
-
-def rec_to_app(mon, x, y):
-    """A desktop point in real pixels -> where this app's windows put it (see rec_monitors)."""
-    _, mx, my, mw, mh, (ax, ay, aw, ah) = mon
-    return round(ax + (x - mx) * aw / mw), round(ay + (y - my) * ah / mh)
-
-
-def rec_from_app(mon, x, y):
-    """A point in this app's window coordinates -> real desktop pixels on that monitor."""
-    _, mx, my, mw, mh, (ax, ay, aw, ah) = mon
-    return round(mx + (x - ax) * mw / aw), round(my + (y - ay) * mh / ah)
+        return sorted(found)
+    return [(f"Monitor {i}{' (main)' if main else ''}: {w} x {h} at {x},{y}", x, y, w, h)
+            for i, ((x, y, w, h), main) in enumerate(rec_pm(monitors), 1)]
 
 
 def rec_overlay(win, clickthrough=True):
@@ -78,7 +71,7 @@ def rec_area(mon, x, y, w, h):
     """An area given relative to a monitor (pixels from its top-left) -> (left, top, width, height) on the desktop.
     0 x 0 = the whole monitor. Sizes are rounded down to even numbers (H.264 needs them); the area must lie on the
     monitor and be at least 16 x 16. Raises ValueError with a message for the user."""
-    ml, mt, mw, mh = mon[1:5]
+    _, ml, mt, mw, mh = mon
     try:
         x, y, w, h = (int(str(v).strip() or 0) for v in (x, y, w, h))
     except ValueError:

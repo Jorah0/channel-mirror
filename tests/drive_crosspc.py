@@ -72,7 +72,7 @@ def make_vts(root, model):
 a_snd = wav(work / "a boom.wav")
 make_sd(work / "A_SD", "A-Main", {"0,0": cm.sd_play(a_snd, "A Boom"), "4,2": cm.sd_stop_key()})
 make_vts(work / "A_VTS", "Wolf")
-(work / "a_settings.json").write_text(json.dumps({"theme": "dark", "sd_autosend": False}))
+(work / "a_settings.json").write_text(json.dumps({"theme": "dark", "sd_autosend": False, "close_to_taskbar": False}))
 peer_proc = subprocess.Popen([sys.executable, "-u", str(HERE / "crosspc_peer.py"), REPO, str(work)])
 # PC-B (here): profile "B-Main": a sound key, and a key that opens a program (never allowed over the link)
 b_snd, snd2, bg = wav(tmp / "b drum.wav"), wav(tmp / "b clap.wav"), png(tmp / "b stars.png")
@@ -100,7 +100,7 @@ cm.sd_push = lambda writes, folders, sd_dir=None, backups=None: (
     pushed.append(sorted(writes)), cm.sd_save(writes, folders, tmp / "B_SD", tmp / "B_backups"))[1]
 cm.sd_start, cm.sd_running, cm.sd_connected = (lambda: None), (lambda: False), (lambda: set())
 cm.SETTINGS = tmp / "b_settings.json"
-cm.SETTINGS.write_text(json.dumps({"theme": "light", "sd_autosend": False, "recorder": {"folder": str(tmp / "rec")}}))
+cm.SETTINGS.write_text(json.dumps({"theme": "light", "sd_autosend": False, "close_to_taskbar": False, "recorder": {"folder": str(tmp / "rec")}}))
 cm.LINK_INBOX = tmp / "B_Incoming"
 cm.LinkServer = functools.partial(cm.LinkServer, host="127.0.0.1")
 cm.link_lan_ip = lambda: "127.0.0.1"
