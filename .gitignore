@@ -10,4 +10,16 @@ CLAUDE.md
 CLAUDE.local.md
 .claude/
 graphify-out/
-/CLAUDE.md
+
+# Keys and secrets (release key lives in %LOCALAPPDATA%\ChannelMirror\android\, never here)
+*.p12
+*.jks
+*.keystore
+*.pfx
+*.pem
+*.key
+.env
+.env.*
+release-password.txt
+build-number.txt
+.channel_mirror.json
