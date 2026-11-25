@@ -292,6 +292,8 @@ The same remote as an installable Android app (Android 8+), served by this PC - 
 
 **Build it** (once per change, on the PC that holds the release key): `.\build-apk.ps1` -> `dist\ChannelMirror-Remote.apk`. It needs a JDK 17+ (`winget install Microsoft.OpenJDK.17`) and the Android SDK command-line tools in `%LOCALAPPDATA%\Android\Sdk` with `platform-tools`, one `platforms;android-NN` and `build-tools;NN.x` (no Gradle, no emulator). `.\build.ps1` puts the APK inside the exe when it's in `dist\`.
 
+**Test it on an emulator** (optional): add the emulator and a phone image once - `sdkmanager emulator` and `android sdk install system-images/android-36/default/x86_64` (Windows Hypervisor Platform on) - then `python tests/run_all.py emulator`. It boots its own hidden emulator, installs the APK you built, and taps through it like a person: a wrong address refused, pairing, the Deck, OBS scenes, closing and reopening, removing the phone on the PC. Nothing real is touched (a fake OBS, temp settings), and other emulators on the PC are left alone. Without the emulator it says SKIPPED.
+
 **Install it the first time**
 1. Phone remote page > *Get the Android app*, scan the QR code with the phone's camera (best on the Tailscale address: encrypted). The browser downloads it; Android asks to *allow this browser to install unknown apps* - allow it once, then install.
 2. Open **CM Remote**. Its first screen shows its signing key: it must match the one the PC's status line says (otherwise don't use it - the download was changed on the way).

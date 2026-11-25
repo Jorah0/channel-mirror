@@ -25,9 +25,10 @@ if not only:
         print("pyflakes not installed: skipped (pip install pyflakes)")
 for d in sorted(HERE.glob("drive_*.py")):
     if not only or d.stem[6:] in only:
-        # transcribe: real speech recognition (and the first run downloads its model) - more time, still bounded
-        checks.append((f"drive {d.stem[6:]}", [PY, "-u", str(d), str(REPO)], 1200 if d.stem == "drive_transcribe"
-                       else 600, {}))
+        # transcribe: real speech recognition (and the first run downloads its model); emulator: an Android emulator
+        # booted from scratch - more time, still bounded
+        checks.append((f"drive {d.stem[6:]}", [PY, "-u", str(d), str(REPO)],
+                       1200 if d.stem in ("drive_transcribe", "drive_emulator") else 600, {}))
 if not only:
     for theme in ("light", "dark"):
         for size in (("1100", "720", "1.3333"), ("1650", "1080"), ("1650", "1080", "1.3333")):  # 1.3333 = 100 %
