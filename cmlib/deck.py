@@ -426,11 +426,16 @@ def sd_listen(path):
     proc = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(p), "-map", "0:a:0", "-f", "f32le", "-acodec",
                              "pcm_f32le", "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
     ms = []
-    while chunk := proc.stdout.read(blk * n * 4 * 250):
-        a = np.frombuffer(chunk, "<f4").reshape(-1, n)
-        k = len(a) // blk
-        if k:
-            ms.append((a[:k * blk].astype(np.float64).reshape(k, blk, n) ** 2).mean(1))
+    try:
+        while chunk := proc.stdout.read(blk * n * 4 * 250):
+            a = np.frombuffer(chunk, "<f4").reshape(-1, n)
+            k = len(a) // blk
+            if k:
+                ms.append((a[:k * blk].astype(np.float64).reshape(k, blk, n) ** 2).mean(1))
+    except BaseException:  # never leave ffmpeg blocked on a full pipe
+        proc.kill()
+        proc.wait()
+        raise
     if proc.wait():
         raise RuntimeError(f"ffmpeg could not decode {p.name}")
     ms = np.concatenate(ms) if ms else np.zeros((0, n))

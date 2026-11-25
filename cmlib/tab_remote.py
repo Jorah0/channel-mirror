@@ -541,7 +541,8 @@ def remote_tab(page, cfg, parts):
     v["addr"].trace_add("write", show_qr)
 
     def tick():
-        page.after(50, tick)  # first: a question shown below still lets other phones' work through
+        # first: a question shown below still lets other phones' work through; fast only while phones can call
+        page.after(50 if st["server"] or st["out"] is not None else 500, tick)
         st["n"] += 1
         try:
             while True:

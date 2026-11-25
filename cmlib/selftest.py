@@ -1616,6 +1616,19 @@ def selftest():
         uninstall(app, links, key)
         assert not app.exists() and not links["start"].exists() and installed(key) is None
         assert not links["sendto_peer"].exists()  # uninstall takes the linked-computers Send to away too
+        dd = Path(d) / "appdata"  # "also delete my data": everything but the CM Remote release key
+        for f in ("ffmpeg/ffmpeg.exe", "whisper/m.bin", "android/release.p12", "link.token"):
+            (dd / f).parent.mkdir(parents=True, exist_ok=True)
+            (dd / f).write_text("x")
+        real_settings = shared("SETTINGS")
+        set_shared("SETTINGS", Path(d) / "uninstall-settings.json")
+        shared("SETTINGS").write_text("{}")
+        try:
+            uninstall(app, {}, key, data=True, data_dir=dd)
+            assert not shared("SETTINGS").exists()
+        finally:
+            set_shared("SETTINGS", real_settings)
+        assert sorted(p.name for p in dd.iterdir()) == ["android"] and (dd / "android" / "release.p12").exists()
         bk = sd_save({pages[0]: {"Controllers": []}}, [new_dir], root, Path(d) / "bk")
         assert json.loads(pages[0].read_text()) == {"Controllers": []}
         with zipfile.ZipFile(bk) as zf:  # the backup holds the page as it was before the write

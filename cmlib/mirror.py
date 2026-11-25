@@ -25,11 +25,16 @@ def analyze(path):
         ["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:a:0", "-f", "f32le", "-acodec", "pcm_f32le", "-"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
     sq, peak, frames = np.zeros(n), np.zeros(n), 0
-    while chunk := proc.stdout.read(FRAMES_PER_READ * 4 * n):  # blocks for full frames until EOF
-        a = np.frombuffer(chunk, "<f4").reshape(-1, n).astype(np.float64)
-        sq += (a * a).sum(0)
-        peak = np.maximum(peak, np.abs(a).max(0))
-        frames += len(a)
+    try:
+        while chunk := proc.stdout.read(FRAMES_PER_READ * 4 * n):  # blocks for full frames until EOF
+            a = np.frombuffer(chunk, "<f4").reshape(-1, n).astype(np.float64)
+            sq += (a * a).sum(0)
+            peak = np.maximum(peak, np.abs(a).max(0))
+            frames += len(a)
+    except BaseException:  # never leave ffmpeg blocked on a full pipe
+        proc.kill()
+        proc.wait()
+        raise
     if proc.wait():
         raise RuntimeError(f"ffmpeg could not decode {Path(path).name}")
     info["duration"] = frames / int(info["sample_rate"])

@@ -248,6 +248,10 @@ class MusicEngine:
         import time
         t0, n = time.perf_counter(), 0
         while not self.quit:
+            if self.q is None and not self.sinks:  # no song, nobody listening: no 50 Hz of silence all day
+                time.sleep(0.1)
+                t0, n = time.perf_counter(), 0
+                continue
             block = self._block()
             with self.lock:
                 sinks = list(self.sinks.values())

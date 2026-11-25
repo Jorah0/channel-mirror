@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from .core import BUNDLE, FFMPEG_DIR, NO_WINDOW, SETTINGS, download_ffmpeg
+from .core import BUNDLE, FFMPEG_DIR, NO_WINDOW, SETTINGS, atomic_write, download_ffmpeg
 
 
 # --- self-install: the one ChannelMirror.exe is also its own installer / updater / uninstaller ---
@@ -106,9 +106,10 @@ def installed(reg_key=UNINSTALL_KEY):
         return None
 
 
-def uninstall(app_dir=APP_DIR, links=None, reg_key=UNINSTALL_KEY, data=False):
+def uninstall(app_dir=APP_DIR, links=None, reg_key=UNINSTALL_KEY, data=False, data_dir=None):
     """Remove shortcuts, the Windows entry and the program folder (deleted once this process exits, since a
-    running exe can't delete itself). data=True also removes settings and the downloaded ffmpeg."""
+    running exe can't delete itself). data=True also removes settings and the downloaded ffmpeg etc. - but never
+    data_dir\\android (the CM Remote release key: lost, installed phones could never be updated again)."""
     from .link import link_registered, link_unregister  # a later part: imported when used
     import winreg
     for lnk in (links or shortcut_paths()).values():
@@ -121,18 +122,30 @@ def uninstall(app_dir=APP_DIR, links=None, reg_key=UNINSTALL_KEY, data=False):
         link_unregister()  # links pointed at this install
     if reg_key == UNINSTALL_KEY and str(app_dir) in (startup_get() or ""):
         startup_set(None)  # don't start a removed program at sign-in
-    gone = [app_dir] + ([FFMPEG_DIR.parent] if data else [])
     if data:
         SETTINGS.unlink(missing_ok=True)
+        data_dir = Path(data_dir or FFMPEG_DIR.parent)  # nothing in it runs now: deleted here, android kept
+        for p in (data_dir.iterdir() if data_dir.is_dir() else []):
+            if p.name.lower() == "android":
+                continue
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:  # in use: left behind, the uninstall still finishes
+                    pass
+        try:
+            data_dir.rmdir()  # only when empty
+        except OSError:
+            pass
     running = getattr(sys, "frozen", False) and Path(sys.executable).resolve().is_relative_to(app_dir.resolve())
     if running:
-        # ponytail: a detached cmd waits ~3 s for this exe to exit, then deletes the folders
-        rm = " & ".join(f'rmdir /s /q "{d}"' for d in gone)
-        subprocess.Popen(f'cmd /c ping -n 4 127.0.0.1 >nul & {rm}', creationflags=NO_WINDOW | 0x00000008,
-                         close_fds=True)  # 0x8 = DETACHED_PROCESS
+        # ponytail: a detached cmd waits ~3 s for this exe to exit, then deletes the folder
+        subprocess.Popen(f'cmd /c ping -n 4 127.0.0.1 >nul & rmdir /s /q "{app_dir}"',
+                         creationflags=NO_WINDOW | 0x00000008, close_fds=True)  # 0x8 = DETACHED_PROCESS
     else:
-        for d in gone:
-            shutil.rmtree(d, ignore_errors=True)
+        shutil.rmtree(app_dir, ignore_errors=True)
 
 
 def offer_install(root, cfg):
@@ -178,7 +191,7 @@ def offer_install(root, cfg):
     if result.get() != "install":
         cfg["portable"] = True
         try:
-            SETTINGS.write_text(json.dumps(cfg))
+            atomic_write(SETTINGS, json.dumps(cfg))
         except OSError:
             pass
         return False

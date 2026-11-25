@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from .core import AUDIO_EXT, BUNDLE, FFMPEG_DIR, OUTPUT_TYPES, SETTINGS, SOURCES, TARGETS, VIDEO_EXT
+from .core import AUDIO_EXT, BUNDLE, FFMPEG_DIR, OUTPUT_TYPES, SETTINGS, SOURCES, TARGETS, VIDEO_EXT, atomic_write
 from .install import VERSION, first_run_setup, offer_install, uninstall
 from .mirror import (
     OUT_SUBDIR,
@@ -428,7 +428,7 @@ def gui():
     def save_settings():
         sources, targets = chosen()
         try:
-            SETTINGS.write_text(json.dumps({**cfg, "sources": sources, "targets": targets, "out_dir": out_var.get().strip(),
+            atomic_write(SETTINGS, json.dumps({**cfg, "sources": sources, "targets": targets, "out_dir": out_var.get().strip(),
                                             "output_type": mode_var.get(), "length": len_var.get().strip(),
                                             "loop": loop_var.get(),
                                             "quiet": user_quiet[0] if split_var.get() else quiet_var.get(),
